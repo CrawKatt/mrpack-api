@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # Web Framework
-axum = { version = "0.7", features = ["multipart"] }
+axum = { version = "0.8.6", features = ["multipart"] }
 tokio = { version = "1.35", features = ["full"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["fs", "trace", "cors", "set-header"] }
@@ -38,6 +38,10 @@ thiserror = "1.0"
 
 # Misc Utils
 bon = "3.8.1"
+
+# Deployment
+shuttle-axum = "0.57.0"
+shuttle-runtime = { version = "0.57.0", default-features = false }
 
 [profile.release]
 opt-level = 3

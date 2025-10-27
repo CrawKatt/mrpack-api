@@ -20,8 +20,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use config::Config;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+#[shuttle_runtime::main]
+async fn main() -> shuttle_axum::ShuttleAxum {
     init_logging()?;
 
     tracing::info!("Loading configuration...");
@@ -48,11 +48,11 @@ async fn main() -> Result<()> {
 
     tracing::info!("✓ Server started successfully");
 
-    axum::serve(listener, app)
+    axum::serve(listener, app.clone())
         .await
         .context("Server error")?;
 
-    Ok(())
+    Ok(app.into())
 }
 
 fn init_logging() -> Result<()> {
@@ -126,7 +126,7 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
     let app = Router::new()
         .merge(public_routes)
         .merge(admin_routes)
-        .nest_service("/", static_service)
+        .fallback_service(static_service)
         .layer(DefaultBodyLimit::max(max_body_size))
         .layer(cors_layer)
         .layer(
