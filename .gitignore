@@ -1,0 +1,41 @@
+# Rust
+target/
+**/*.rs.bk
+*.pdb
+
+# Storage directory (contains uploaded mrpack files)
+storage/*.mrpack
+storage/*
+!storage/.gitkeep
+
+# Cargo
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Test files
+test_*.mrpack

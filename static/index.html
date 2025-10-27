@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mrpack API - Servidor de Modpacks</title>
+    <link rel="stylesheet" href="/css/index.css">
+</head>
+<body>
+    <div class="container">
+        <div class="logo">📦</div>
+        <h1>Mrpack API</h1>
+        <p class="subtitle">
+            <span class="status-indicator"></span>
+            Servidor de Modpacks en línea
+        </p>
+
+        <div class="section">
+            <h2>🚀 Endpoints Disponibles</h2>
+            <div class="link-grid">
+                <a href="/api/download" class="link-card">
+                    <div class="link-icon">📥</div>
+                    <div class="link-content">
+                        <div class="link-title">Descargar Modpack</div>
+                        <div class="link-description">GET /api/download</div>
+                    </div>
+                    <div class="link-arrow">→</div>
+                </a>
+
+                <a href="/api/info" class="link-card">
+                    <div class="link-icon">ℹ️</div>
+                    <div class="link-content">
+                        <div class="link-title">Información</div>
+                        <div class="link-description">GET /api/info - Ver detalles del modpack</div>
+                    </div>
+                    <div class="link-arrow">→</div>
+                </a>
+
+                <a href="/api/health" class="link-card">
+                    <div class="link-icon">❤️</div>
+                    <div class="link-content">
+                        <div class="link-title">Health Check</div>
+                        <div class="link-description">GET /api/health - Estado del servidor</div>
+                    </div>
+                    <div class="link-arrow">→</div>
+                </a>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>🔧 Administración</h2>
+            <p style="color: #6c757d; margin-bottom: 15px;">
+                Gestiona y actualiza los modpacks desde el panel administrativo
+            </p>
+            <a href="/login.html" class="admin-button">
+                <span>🔐</span>
+                <span>Iniciar Sesión</span>
+            </a>
+        </div>
+
+        <div class="footer">
+            <p>Mrpack API v1.0</p>
+            <p style="margin-top: 8px;">Powered by Rust + Axum</p>
+        </div>
+    </div>
+
+    <script>
+        // Verificar estado de la API al cargar
+        fetch('/api/health')
+            .then(response => response.json())
+            .then(data => {
+                console.log('API Status:', data);
+            })
+            .catch(error => {
+                console.error('API Error:', error);
+                document.querySelector('.status-indicator').style.background = '#dc3545';
+            });
+    </script>
+</body>
+</html>
