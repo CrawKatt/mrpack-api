@@ -39,3 +39,7 @@ Thumbs.db
 
 # Test files
 test_*.mrpack
+/Secrets.toml
+/target
+.shuttle*
+Secrets*.toml

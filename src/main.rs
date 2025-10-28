@@ -21,11 +21,13 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use config::Config;
 
 #[shuttle_runtime::main]
-async fn main() -> shuttle_axum::ShuttleAxum {
+async fn main(
+    #[shuttle_runtime::Secrets] secrets: shuttle_runtime::SecretStore,
+) -> shuttle_axum::ShuttleAxum {
     init_logging()?;
 
     tracing::info!("Loading configuration...");
-    let config = Config::from_env().context("Failed to load configuration")?;
+    let config = Config::from_secrets(secrets).context("Failed to load configuration")?;
     let config = Arc::new(config);
 
     log_startup_info(&config);
@@ -41,16 +43,7 @@ async fn main() -> shuttle_axum::ShuttleAxum {
     tracing::info!("🔧 Admin panel: http://{addr}/admin.html");
     tracing::info!("📊 API info: http://{addr}/api/info");
     tracing::info!("");
-
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .context("Failed to bind to address")?;
-
-    tracing::info!("✓ Server started successfully");
-
-    axum::serve(listener, app.clone())
-        .await
-        .context("Server error")?;
+    tracing::info!("✓ Configuration loaded successfully");
 
     Ok(app.into())
 }
