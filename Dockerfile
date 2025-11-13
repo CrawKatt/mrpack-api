@@ -11,7 +11,6 @@ FROM debian:stable-slim
 
 WORKDIR /app
 COPY --from=builder /app/target/release/mrpack_api /app/app
-COPY .env /app/.env
 
 EXPOSE 8000
 
