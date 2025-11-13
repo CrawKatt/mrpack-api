@@ -11,6 +11,8 @@ FROM debian:stable-slim
 WORKDIR /app
 
 COPY --from=builder /app/target/release/mrpack_api /app/mrpack_api
+COPY static /app/static
+
 EXPOSE 8000
 
 CMD ["/app/mrpack_api"]
