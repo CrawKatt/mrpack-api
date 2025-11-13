@@ -38,32 +38,31 @@ pub struct SecurityConfig {
 
 impl Config {
     /// Load configuration from Shuttle SecretStore
-    pub fn from_secrets(secrets: shuttle_runtime::SecretStore) -> Result<Self> {
-        // Helper function to get secret from SecretStore
-        let get_secret = |key: &str| -> Option<String> {
-            secrets.get(key)
-        };
+    pub fn from_env() -> Result<Self> {
+        // Load .env file if it exists (for development)
+        let _ = dotenvy::dotenv();
 
         let server = ServerConfig {
-            host: get_secret("SERVER_HOST").unwrap_or_else(|| "0.0.0.0".to_string()),
-            port: get_secret("SERVER_PORT")
-                .unwrap_or_else(|| "3000".to_string())
+            host: std::env::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
+            port: std::env::var("SERVER_PORT")
+                .unwrap_or_else(|_| "3000".to_string())
                 .parse()
                 .context("SERVER_PORT must be a valid port number")?,
         };
 
-        let username = get_secret("ADMIN_USERNAME").context(
-            "ADMIN_USERNAME is required. \n\
-             Add it to Secrets.toml: ADMIN_USERNAME = \"your_username\"",
+        let username = std::env::var("ADMIN_USERNAME").context(
+            "ADMIN_USERNAME environment variable is required. \
+             Set it to your desired admin username.",
         )?;
 
-        let password_hash_raw = get_secret("ADMIN_PASSWORD_HASH").context(
-            "ADMIN_PASSWORD_HASH is required.\n\
+        let password_hash_raw = std::env::var("ADMIN_PASSWORD_HASH").context(
+            "ADMIN_PASSWORD_HASH environment variable is required.\n\
              \n\
              Steps to fix:\n\
              1. Generate a hash: cargo run --bin hash_password \"YourPassword123\"\n\
-             2. Add to Secrets.toml: ADMIN_PASSWORD_HASH = \"$argon2id$v=19$...\"\n\
-             3. For production: shuttle project secrets set ADMIN_PASSWORD_HASH='$argon2id$...'",
+             2. Copy the ENTIRE hash output (starts with $argon2)\n\
+             3. Add to .env: ADMIN_PASSWORD_HASH='$argon2id$v=19$...'\n\
+             4. Use SINGLE QUOTES to prevent shell variable expansion!",
         )?;
 
         // Remove surrounding quotes (single or double) to handle shell escaping
@@ -113,21 +112,22 @@ impl Config {
         };
 
         let storage = StorageConfig {
-            directory: get_secret("STORAGE_DIR")
-                .unwrap_or_else(|| "storage".to_string())
+            directory: std::env::var("STORAGE_DIR")
+                .unwrap_or_else(|_| "storage".to_string())
                 .into(),
-            max_file_size_mb: get_secret("MAX_FILE_SIZE_MB")
-                .unwrap_or_else(|| "500".to_string())
+            max_file_size_mb: std::env::var("MAX_FILE_SIZE_MB")
+                .unwrap_or_else(|_| "500".to_string())
                 .parse()
                 .context("MAX_FILE_SIZE_MB must be a valid number")?,
         };
 
-        let require_https = get_secret("REQUIRE_HTTPS")
-            .unwrap_or_else(|| "false".to_string())
+        let require_https = std::env::var("REQUIRE_HTTPS")
+            .unwrap_or_else(|_| "false".to_string())
             .parse()
             .context("REQUIRE_HTTPS must be true or false")?;
 
-        let allowed_origins = get_secret("ALLOWED_ORIGINS")
+        let allowed_origins = std::env::var("ALLOWED_ORIGINS")
+            .ok()
             .map(|origins| origins.split(',').map(|s| s.trim().to_string()).collect());
 
         let security = SecurityConfig {

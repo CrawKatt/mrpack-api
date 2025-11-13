@@ -1,7 +1,7 @@
 [package]
 name = "mrpack_api"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 # Web Framework
@@ -38,10 +38,6 @@ thiserror = "1.0"
 
 # Misc Utils
 bon = "3.8.1"
-
-# Deployment
-shuttle-axum = "0.57.0"
-shuttle-runtime = { version = "0.57.0", default-features = false }
 
 [profile.release]
 opt-level = 3
