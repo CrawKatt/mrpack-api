@@ -12,6 +12,7 @@ WORKDIR /app
 
 COPY --from=builder /app/target/release/mrpack_api /app/mrpack_api
 COPY static /app/static
+COPY .env /app/.env
 
 EXPOSE 8000
 

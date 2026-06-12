@@ -22,6 +22,7 @@ pub struct ServerConfig {
 pub struct AuthConfig {
     pub username: String,
     pub password_hash: String,
+    pub download_token_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,7 +67,10 @@ impl Config {
         )?;
 
         // Remove surrounding quotes (single or double) to handle shell escaping
-        let password_hash = password_hash_raw.trim_matches('\'').trim_matches('"').to_string();
+        let password_hash = password_hash_raw
+            .trim_matches('\'')
+            .trim_matches('"')
+            .to_string();
 
         // Validate username
         if username.len() < 3 {
@@ -109,6 +113,7 @@ impl Config {
         let auth = AuthConfig {
             username,
             password_hash,
+            download_token_hash: read_optional_hash("DOWNLOAD_TOKEN_HASH")?,
         };
 
         let storage = StorageConfig {
@@ -151,10 +156,8 @@ impl Config {
     /// Validate the configuration for security issues
     fn validate(&self) -> Result<()> {
         // Check if running in production mode
-        let is_production = std::env::var("RUST_ENV")
-            .unwrap_or_default()
-            .to_lowercase()
-            == "production";
+        let is_production =
+            std::env::var("RUST_ENV").unwrap_or_default().to_lowercase() == "production";
 
         if is_production {
             // In production, enforce security requirements
@@ -168,7 +171,7 @@ impl Config {
             if self.security.allowed_origins.is_none() {
                 tracing::warn!(
                     "⚠️  SECURITY WARNING: ALLOWED_ORIGINS is not set. \
-                     CORS will allow all origins!"
+                     Cross-origin browser access will be disabled."
                 );
             }
         }
@@ -182,12 +185,12 @@ impl Config {
         if self.storage.max_file_size_mb == 0 || self.storage.max_file_size_mb > 10240 {
             anyhow::bail!("MAX_FILE_SIZE_MB must be between 1 and 10240 (10GB)");
         }
-        
+
         // Validate username length
         if self.auth.username.len() < 4 {
             anyhow::bail!("USERNAME must be at least 4 characters long");
         }
-        
+
         // Validate password hash length
         if self.auth.password_hash.len() < 64 {
             anyhow::bail!("PASSWORD_HASH must be at least 64 characters long");
@@ -205,8 +208,30 @@ impl Config {
 
     /// Check if CORS should allow all origins
     pub fn allow_all_origins(&self) -> bool {
-        self.security.allowed_origins.is_none()
+        self.security
+            .allowed_origins
+            .as_ref()
+            .is_some_and(|origins| origins.iter().any(|origin| origin == "*"))
     }
+}
+
+fn read_optional_hash(env_name: &str) -> Result<Option<String>> {
+    let Some(raw_hash) = std::env::var(env_name).ok() else {
+        return Ok(None);
+    };
+
+    let hash = raw_hash.trim_matches('\'').trim_matches('"').to_string();
+    if hash.is_empty() {
+        return Ok(None);
+    }
+
+    if !hash.starts_with("$argon2") {
+        anyhow::bail!("{env_name} is not a valid Argon2 hash");
+    }
+
+    PasswordHash::new(&hash).with_context(|| format!("{env_name} has an invalid format"))?;
+
+    Ok(Some(hash))
 }
 
 #[cfg(test)]
@@ -223,6 +248,7 @@ mod tests {
             auth: AuthConfig {
                 username: "admin".to_string(),
                 password_hash: "$argon2id$v=19$m=19456,t=2,p=1$...".to_string(),
+                download_token_hash: None,
             },
             storage: StorageConfig {
                 directory: "storage".into(),
@@ -248,6 +274,7 @@ mod tests {
             auth: AuthConfig {
                 username: "ab".to_string(), // Too short
                 password_hash: "$argon2id$v=19$m=19456,t=2,p=1$...".to_string(),
+                download_token_hash: None,
             },
             storage: StorageConfig {
                 directory: "storage".into(),

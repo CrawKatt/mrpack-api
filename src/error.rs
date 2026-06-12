@@ -1,11 +1,11 @@
+use axum::http::header;
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 use std::io;
-use axum::http::header;
 use thiserror::Error;
 
 pub type ResponseResult<T> = Result<T, AppError>;
@@ -29,6 +29,9 @@ pub enum AppError {
 
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
+
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
 
     #[error("Invalid configuration: {0}")]
     Configuration(String),
@@ -113,6 +116,7 @@ impl IntoResponse for AppError {
                     Json(ErrorResponse::new("Unauthorized - Invalid or missing credentials"))
                 ).into_response();
             },
+            AppError::Forbidden(_) => (StatusCode::FORBIDDEN, "Forbidden".to_string(), true),
             AppError::Configuration(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Server configuration error".to_string(),

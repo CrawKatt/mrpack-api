@@ -229,6 +229,14 @@ h2 {
     display: none;
 }
 
+#modFileInput {
+    display: none;
+}
+
+.upload-area-compact {
+    padding: var(--spacing-lg);
+}
+
 /* ----------------------------------------------------------------------------
  * Selected File Display
  * ---------------------------------------------------------------------------- */
@@ -584,8 +592,9 @@ h2 {
 }
 
 .mod-item {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+    gap: 0.5rem;
     align-items: center;
     padding: 0.75rem;
     border-bottom: 1px solid #f1f3f4;
@@ -596,19 +605,27 @@ h2 {
 }
 
 .mod-name {
-    flex: 1;
     font-weight: 500;
     color: #495057;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-.mod-env {
+.mod-env,
+.mod-source {
     padding: 0.2rem 0.5rem;
     border-radius: 4px;
     font-size: 0.75rem;
     font-weight: 600;
-    margin: 0 0.5rem;
     background: #e9ecef;
     color: #495057;
+}
+
+.mod-source {
+    background: #e7f3ff;
+    color: #004085;
 }
 
 .mod-size {
@@ -616,4 +633,29 @@ h2 {
     color: #6c757d;
     min-width: 60px;
     text-align: right;
+}
+
+.mod-remove-btn {
+    border: none;
+    border-radius: 5px;
+    background: #dc3545;
+    color: white;
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.35rem 0.55rem;
+}
+
+.mod-remove-btn:hover {
+    background: #c82333;
+}
+
+@media (max-width: 700px) {
+    .mod-item {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .mod-size {
+        text-align: left;
+    }
 }

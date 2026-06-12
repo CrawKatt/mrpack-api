@@ -91,10 +91,35 @@
                 <button class="btn btn-success" id="refreshBtn" type="button">
                     🔄 Refresh
                 </button>
+                <button class="btn btn-success" id="downloadBtn" type="button" disabled>
+                    📥 Download
+                </button>
                 <button class="btn btn-danger" id="deleteBtn" type="button" disabled>
                     🗑️ Delete
                 </button>
             </div>
+        </section>
+
+        <!-- Mod Editing Section -->
+        <section class="section">
+            <h2>🧩 Manage Mods</h2>
+
+            <div class="upload-area upload-area-compact" id="modUploadArea">
+                <div class="upload-icon">🧩</div>
+                <div class="upload-text">Click or drag a mod jar here</div>
+                <div class="upload-hint">Only .jar files; added under overrides/mods</div>
+            </div>
+
+            <input type="file" id="modFileInput" accept=".jar" aria-label="Select mod jar file">
+
+            <div class="selected-file" id="selectedModFile">
+                <span class="file-name" id="selectedModFileName"></span>
+                <button class="remove-file remove-mod-file" type="button" aria-label="Remove selected mod file">✕</button>
+            </div>
+
+            <button class="btn btn-primary" id="addModBtn" type="button" disabled>
+                <span>➕ Add Mod</span>
+            </button>
         </section>
 
         <!-- Upload Section -->
@@ -124,14 +149,6 @@
             <h2>🔗 API Endpoints</h2>
             
             <div class="api-links">
-                <a href="/api/download" class="api-link" target="_blank" rel="noopener">
-                    <span class="api-link-label">📥 Download Modpack</span>
-                    <span class="api-link-url">/api/download</span>
-                </a>
-                <a href="/api/info" class="api-link" target="_blank" rel="noopener">
-                    <span class="api-link-label">ℹ️ Information</span>
-                    <span class="api-link-url">/api/info</span>
-                </a>
                 <a href="/api/health" class="api-link" target="_blank" rel="noopener">
                     <span class="api-link-label">❤️ Health Check</span>
                     <span class="api-link-url">/api/health</span>

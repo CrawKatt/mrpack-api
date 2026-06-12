@@ -1,15 +1,17 @@
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     extract::{Request, State},
-    http::header,
+    http::{HeaderMap, HeaderName, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use std::sync::Arc;
 
 use crate::config::Config;
 use crate::error::AppError;
 use crate::utils::constant_time_compare;
+
+const DOWNLOAD_TOKEN_HEADER: HeaderName = HeaderName::from_static("x-download-token");
 
 /// Middleware de autenticación HTTP Basic
 pub async fn auth_middleware(
@@ -17,22 +19,7 @@ pub async fn auth_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    let auth_header = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|header| header.to_str().ok());
-    
-    let Some(auth_value) = auth_header else {
-        tracing::warn!("Authentication failed: missing Authorization header");
-        return AppError::Unauthorized("Missing Authorization header".to_string()).into_response()
-    };
-
-    let Some(credentials) = auth_value.strip_prefix("Basic ") else {
-        tracing::warn!("Authentication failed: invalid Authorization header format");
-        return AppError::Unauthorized("Invalid Authorization header format".into()).into_response();
-    };
-
-    match verify_basic_auth(credentials, &state) {
+    match verify_admin_auth(request.headers(), &state) {
         Ok(true) => {
             tracing::debug!("Authentication successful");
             next.run(request).await
@@ -40,13 +27,74 @@ pub async fn auth_middleware(
         Ok(false) => {
             tracing::warn!("Authentication failed: invalid credentials");
             AppError::Unauthorized("Invalid credentials".to_string()).into_response()
-
         }
         Err(why) => {
             tracing::error!("Authentication error: {why}");
             AppError::Unauthorized("Authentication error".to_string()).into_response()
         }
     }
+}
+
+pub async fn download_auth_middleware(
+    State(state): State<Arc<Config>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    match verify_download_auth(request.headers(), &state) {
+        Ok(true) => next.run(request).await,
+        Ok(false) => {
+            tracing::warn!("Protected download endpoint rejected unauthorized request");
+            AppError::Unauthorized("Missing or invalid download credentials".to_string())
+                .into_response()
+        }
+        Err(why) => {
+            tracing::error!("Download authentication error: {why}");
+            AppError::Unauthorized("Download authentication error".to_string()).into_response()
+        }
+    }
+}
+
+pub async fn https_middleware(
+    State(state): State<Arc<Config>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !state.security.require_https || request_is_https(&request) {
+        return next.run(request).await;
+    }
+
+    tracing::warn!("Rejected non-HTTPS request while REQUIRE_HTTPS is enabled");
+    AppError::Forbidden("HTTPS is required".to_string()).into_response()
+}
+
+pub fn verify_admin_auth(headers: &HeaderMap, config: &Config) -> anyhow::Result<bool> {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|header| header.to_str().ok());
+
+    let Some(auth_value) = auth_header else {
+        tracing::warn!("Authentication failed: missing Authorization header");
+        return Ok(false);
+    };
+
+    let Some(credentials) = auth_value.strip_prefix("Basic ") else {
+        tracing::warn!("Authentication failed: invalid Authorization header format");
+        return Ok(false);
+    };
+
+    verify_basic_auth(credentials, config)
+}
+
+pub fn verify_download_auth(headers: &HeaderMap, config: &Config) -> anyhow::Result<bool> {
+    if verify_admin_auth(headers, config)? {
+        return Ok(true);
+    }
+
+    let Some(token) = bearer_token(headers).or_else(|| custom_download_token(headers)) else {
+        return Ok(false);
+    };
+
+    verify_download_token(token, config)
 }
 
 /// Verificar credenciales de Basic Auth
@@ -82,6 +130,69 @@ fn verify_basic_auth(encoded_credentials: &str, config: &Config) -> anyhow::Resu
         Ok(_) => Ok(true),
         Err(_) => Ok(false),
     }
+}
+
+fn verify_download_token(token: &str, config: &Config) -> anyhow::Result<bool> {
+    let Some(token_hash) = &config.auth.download_token_hash else {
+        tracing::warn!("Download token was provided, but DOWNLOAD_TOKEN_HASH is not configured");
+        return Ok(false);
+    };
+
+    let password_hash = PasswordHash::new(token_hash)
+        .map_err(|why| anyhow::anyhow!("Invalid download token hash format: {why}"))?;
+
+    let argon2 = Argon2::default();
+
+    match argon2.verify_password(token.as_bytes(), &password_hash) {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+}
+
+fn custom_download_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(DOWNLOAD_TOKEN_HEADER)
+        .and_then(|header| header.to_str().ok())
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+}
+
+fn request_is_https(request: &Request) -> bool {
+    if request.uri().scheme_str() == Some("https") {
+        return true;
+    }
+
+    let forwarded_proto = request
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|header| header.to_str().ok())
+        .unwrap_or_default();
+
+    if forwarded_proto
+        .split(',')
+        .any(|proto| proto.trim().eq_ignore_ascii_case("https"))
+    {
+        return true;
+    }
+
+    request
+        .headers()
+        .get("forwarded")
+        .and_then(|header| header.to_str().ok())
+        .is_some_and(|forwarded| {
+            forwarded
+                .split(';')
+                .any(|part| part.trim().eq_ignore_ascii_case("proto=https"))
+        })
 }
 
 /// Decodificar Base64 de forma segura

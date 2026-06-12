@@ -45,22 +45,15 @@ class AuthManager {
      */
     storeCredentials(username, password, remember) {
         const credentials = btoa(`${username}:${password}`);
-        
-        if (remember) {
-            // Store in localStorage (less secure but persistent)
-            localStorage.setItem(this.sessionKey, credentials);
-        } else {
-            // Store in sessionStorage (cleared when browser closes)
-            sessionStorage.setItem(this.sessionKey, credentials);
-        }
+        sessionStorage.setItem(this.sessionKey, credentials);
+        localStorage.removeItem(this.sessionKey);
     }
 
     /**
      * Get stored credentials
      */
     getCredentials() {
-        return sessionStorage.getItem(this.sessionKey) || 
-               localStorage.getItem(this.sessionKey);
+        return sessionStorage.getItem(this.sessionKey);
     }
 
     /**
