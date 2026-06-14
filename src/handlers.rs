@@ -1,4 +1,7 @@
-use std::io::Read;
+use crate::config::Config;
+use crate::error::{AppError, ResponseResult};
+use crate::utils::constant_time_compare;
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     body::Body,
     extract::{Multipart, State},
@@ -6,18 +9,15 @@ use axum::{
     response::Response,
     Json,
 };
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
+use bon::Builder;
 use serde::{Deserialize, Serialize};
+use std::io::{Cursor, Read, Seek};
 use std::path::PathBuf;
 use std::sync::Arc;
-use bon::Builder;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use zip::ZipArchive;
-use crate::config::Config;
-use crate::error::{AppError, ResponseResult};
-use crate::utils::constant_time_compare;
 
 const MRPACK_EXTENSION: &str = ".mrpack";
 const MRPACK_FILENAME: &str = "modpack.mrpack";
@@ -80,64 +80,118 @@ pub struct ModInfo {
     pub environment: String,
 }
 
-async fn extract_modpack_info(file_path: &std::path::Path) -> Result<ModpackInfo, Box<dyn std::error::Error + Send + Sync>> {
-    let file = std::fs::File::open(file_path)?;
-    let mut archive = ZipArchive::new(file)?;
-
+fn extract_modpack_info_from_reader<R>(
+    reader: R,
+) -> Result<ModpackInfo, Box<dyn std::error::Error + Send + Sync>>
+where
+    R: Read + Seek,
+{
+    let mut archive = ZipArchive::new(reader)?;
     let mut index_file = archive.by_name("modrinth.index.json")?;
     let mut contents = String::new();
     index_file.read_to_string(&mut contents)?;
 
     let index: ModrinthIndex = serde_json::from_str(&contents)?;
+    validate_modrinth_index(&index)?;
 
+    Ok(modpack_info_from_index(index))
+}
+
+fn extract_modpack_info(
+    file_path: &std::path::Path,
+) -> Result<ModpackInfo, Box<dyn std::error::Error + Send + Sync>> {
+    let file = std::fs::File::open(file_path)?;
+    extract_modpack_info_from_reader(file)
+}
+
+fn modpack_info_from_index(index: ModrinthIndex) -> ModpackInfo {
     let (loader, loader_version) = extract_loader_info(&index.dependencies);
 
-    let mods: Vec<ModInfo> = index.files.iter().map(|file| {
-        let name = std::path::Path::new(&file.path)
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
+    let mods: Vec<ModInfo> = index
+        .files
+        .iter()
+        .map(|file| {
+            let name = std::path::Path::new(&file.path)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
 
-        let environment = match &file.env {
-            Some(env) => {
-                if env.client == "required" && env.server == "required" {
-                    "both".to_string()
-                } else if env.client == "required" {
-                    "client".to_string()
-                } else if env.server == "required" {
-                    "server".to_string()
-                } else {
-                    "optional".to_string()
+            let environment = match &file.env {
+                Some(env) => {
+                    if env.client == "required" && env.server == "required" {
+                        "both".to_string()
+                    } else if env.client == "required" {
+                        "client".to_string()
+                    } else if env.server == "required" {
+                        "server".to_string()
+                    } else {
+                        "optional".to_string()
+                    }
                 }
-            },
-            None => "both".to_string(),
-        };
+                None => "both".to_string(),
+            };
 
-        return ModInfo::builder()
-            .name(name)
-            .file_size(file.file_size)
-            .environment(environment)
-            .build();
+            ModInfo::builder()
+                .name(name)
+                .file_size(file.file_size)
+                .environment(environment)
+                .build()
+        })
+        .collect();
 
-    }).collect();
-
-    let modpack_info = ModpackInfo::builder()
+    ModpackInfo::builder()
         .name(index.name)
         .maybe_summary(index.summary)
         .version_id(index.version_id)
         .format_version(index.format_version)
-        .minecraft_version(index.dependencies.get("minecraft").cloned().unwrap_or_default())
+        .minecraft_version(
+            index
+                .dependencies
+                .get("minecraft")
+                .cloned()
+                .unwrap_or_default(),
+        )
         .loader(loader)
         .loader_version(loader_version)
         .mod_count(mods.len())
         .mods(mods)
-        .build();
-
-    Ok(modpack_info)
+        .build()
 }
 
-fn extract_loader_info(dependencies: &std::collections::HashMap<String, String>) -> (String, String) {
+fn validate_modrinth_index(
+    index: &ModrinthIndex,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if index.game != "minecraft" {
+        return Err("modrinth.index.json must target the minecraft game".into());
+    }
+    if index.name.trim().is_empty() || index.version_id.trim().is_empty() {
+        return Err("modpack name and versionId must not be empty".into());
+    }
+    if index
+        .dependencies
+        .get("minecraft")
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err("modrinth.index.json is missing the minecraft dependency".into());
+    }
+    if index.files.iter().any(|file| {
+        file.path.trim().is_empty()
+            || file.downloads.is_empty()
+            || file
+                .hashes
+                .get("sha1")
+                .is_none_or(|hash| hash.trim().is_empty())
+    }) {
+        return Err("every modpack file must include a path, download URL, and SHA-1 hash".into());
+    }
+
+    Ok(())
+}
+
+fn extract_loader_info(
+    dependencies: &std::collections::HashMap<String, String>,
+) -> (String, String) {
     if let Some(version) = dependencies.get("fabric-loader") {
         return ("Fabric".to_string(), version.clone());
     }
@@ -222,14 +276,14 @@ pub async fn login(
 ) -> ResponseResult<Json<LoginResponse>> {
     tracing::info!("Login attempt for user: {}", payload.username);
 
-    let username_matches = constant_time_compare(
-        payload.username.as_bytes(),
-        config.auth.username.as_bytes(),
-    );
+    let username_matches =
+        constant_time_compare(payload.username.as_bytes(), config.auth.username.as_bytes());
 
     if !username_matches {
         tracing::warn!("Login failed: invalid username");
-        return Err(AppError::AuthenticationFailed("Credenciales incorrectas".to_string()));
+        return Err(AppError::AuthenticationFailed(
+            "Credenciales incorrectas".to_string(),
+        ));
     }
 
     let password_hash = PasswordHash::new(&config.auth.password_hash)
@@ -237,8 +291,13 @@ pub async fn login(
 
     let argon2 = Argon2::default();
     let Ok(_) = argon2.verify_password(payload.password.as_bytes(), &password_hash) else {
-        tracing::warn!("Login failed: invalid password for user: {}", payload.username);
-        return Err(AppError::AuthenticationFailed("Credenciales incorrectas".to_string()))
+        tracing::warn!(
+            "Login failed: invalid password for user: {}",
+            payload.username
+        );
+        return Err(AppError::AuthenticationFailed(
+            "Credenciales incorrectas".to_string(),
+        ));
     };
 
     Ok(Json(LoginResponse {
@@ -247,7 +306,9 @@ pub async fn login(
     }))
 }
 
-pub async fn info_modpack(State(config): State<Arc<Config>>) -> ResponseResult<Json<ModpackDetails>> {
+pub async fn info_modpack(
+    State(config): State<Arc<Config>>,
+) -> ResponseResult<Json<ModpackDetails>> {
     let file_path = get_mrpack_path(&config);
     if !file_path.exists() {
         let modpack_details = ModpackDetails::builder()
@@ -266,20 +327,17 @@ pub async fn info_modpack(State(config): State<Arc<Config>>) -> ResponseResult<J
     let file_size = metadata.len();
     let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
 
-    let modpack_info = match extract_modpack_info(&file_path).await {
-        Ok(info) => Some(info),
-        Err(why) => {
-            tracing::warn!("Failed to extract modpack info: {why}");
-            None
-        }
-    };
+    let modpack_info = extract_modpack_info(&file_path).map_err(|why| {
+        tracing::error!("Stored modpack is invalid: {why}");
+        AppError::Internal("Stored modpack is invalid".to_string())
+    })?;
 
     let modpack_details = ModpackDetails::builder()
         .available(true)
         .file_name(MRPACK_FILENAME.to_string())
         .file_size(file_size)
         .file_size_mb(file_size_mb)
-        .maybe_modpack_info(modpack_info)
+        .modpack_info(modpack_info)
         .build();
 
     Ok(Json(modpack_details))
@@ -287,9 +345,9 @@ pub async fn info_modpack(State(config): State<Arc<Config>>) -> ResponseResult<J
 
 pub async fn download_modpack(State(config): State<Arc<Config>>) -> ResponseResult<Response> {
     let file_path = get_mrpack_path(&config);
-    let metadata = fs::metadata(&file_path).await.map_err(|_| {
-        AppError::FileNotFound("No modpack available for download".to_string())
-    })?;
+    let metadata = fs::metadata(&file_path)
+        .await
+        .map_err(|_| AppError::FileNotFound("No modpack available for download".to_string()))?;
 
     let file_size = metadata.len();
     let file_size_mb = file_size as f64 / 1024.0 / 1024.0;
@@ -310,7 +368,10 @@ pub async fn download_modpack(State(config): State<Arc<Config>>) -> ResponseResu
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", MRPACK_FILENAME))
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", MRPACK_FILENAME),
+        )
         .header(header::CONTENT_LENGTH, file_size.to_string())
         .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
         .body(body)
@@ -363,12 +424,17 @@ pub async fn upload_modpack(
         break;
     }
 
-    let (original_name, data) = file_data
-        .ok_or_else(|| AppError::BadRequest("No file provided in request".to_string()))?;
+    let (original_name, data) =
+        file_data.ok_or_else(|| AppError::BadRequest("No file provided in request".to_string()))?;
 
     let file_size = data.len() as u64;
     let file_size_mb = file_size as f64 / 1024.0 / 1024.0;
     tracing::info!("Uploading file: {original_name} ({:.2} MB)", file_size_mb);
+
+    extract_modpack_info_from_reader(Cursor::new(&data)).map_err(|why| {
+        tracing::warn!("Rejected invalid modpack upload: {why}");
+        AppError::Validation(format!("Invalid .mrpack file: {why}"))
+    })?;
 
     let storage_dir = &config.storage.directory;
     fs::create_dir_all(storage_dir).await.map_err(|e| {
@@ -406,7 +472,7 @@ pub async fn upload_modpack(
         original_name,
         file_size_mb
     );
-    
+
     let upload_response = UploadResponse::builder()
         .success(true)
         .message("File uploaded successfully".to_string())
@@ -418,12 +484,16 @@ pub async fn upload_modpack(
     Ok(Json(upload_response))
 }
 
-pub async fn delete_modpack(State(config): State<Arc<Config>>) -> ResponseResult<Json<ApiResponse>> {
+pub async fn delete_modpack(
+    State(config): State<Arc<Config>>,
+) -> ResponseResult<Json<ApiResponse>> {
     let file_path = get_mrpack_path(&config);
 
     tracing::info!("Modpack deletion requested");
     if !file_path.exists() {
-        return Err(AppError::FileNotFound("No modpack file to delete".to_string()));
+        return Err(AppError::FileNotFound(
+            "No modpack file to delete".to_string(),
+        ));
     }
 
     fs::remove_file(&file_path).await.map_err(|why| {
@@ -472,14 +542,16 @@ fn validate_file_size(size: usize, config: &Config) -> ResponseResult<()> {
 }
 
 fn sanitize_filename(filename: &str) -> ResponseResult<String> {
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err(AppError::Validation(
+            "Filename contains invalid path components".to_string(),
+        ));
+    }
+
     let name = std::path::Path::new(filename)
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| AppError::Validation("Invalid filename".to_string()))?;
-
-    if name.contains("..") || name.contains('/') || name.contains('\\') {
-        return Err(AppError::Validation("Filename contains invalid characters".to_string()));
-    }
 
     if name.len() > 255 {
         return Err(AppError::Validation("Filename too long".to_string()));
@@ -513,7 +585,10 @@ mod tests {
     #[test]
     fn test_sanitize_filename_valid() {
         assert_eq!(sanitize_filename("test.mrpack").unwrap(), "test.mrpack");
-        assert_eq!(sanitize_filename("my-modpack.mrpack").unwrap(), "my-modpack.mrpack");
+        assert_eq!(
+            sanitize_filename("my-modpack.mrpack").unwrap(),
+            "my-modpack.mrpack"
+        );
     }
 
     #[test]
@@ -525,9 +600,9 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_filename_removes_path() {
-        assert_eq!(sanitize_filename("/path/to/file.mrpack").unwrap(), "file.mrpack");
-        assert_eq!(sanitize_filename("path/to/file.mrpack").unwrap(), "file.mrpack");
+    fn test_sanitize_filename_rejects_paths() {
+        assert!(sanitize_filename("/path/to/file.mrpack").is_err());
+        assert!(sanitize_filename("path/to/file.mrpack").is_err());
     }
 
     #[test]
@@ -552,5 +627,20 @@ mod tests {
         assert!(!constant_time_compare(b"hello", b"hello world"));
         assert!(!constant_time_compare(b"hello world", b"hello"));
         assert!(!constant_time_compare(b"a", b""));
+    }
+
+    #[test]
+    fn test_validate_modrinth_index_rejects_missing_minecraft() {
+        let index = ModrinthIndex {
+            format_version: 1,
+            game: "minecraft".to_string(),
+            version_id: "1.0.0".to_string(),
+            name: "Pixel Client".to_string(),
+            summary: None,
+            files: Vec::new(),
+            dependencies: std::collections::HashMap::new(),
+        };
+
+        assert!(validate_modrinth_index(&index).is_err());
     }
 }

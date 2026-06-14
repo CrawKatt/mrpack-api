@@ -22,6 +22,7 @@ pub struct ServerConfig {
 pub struct AuthConfig {
     pub username: String,
     pub password_hash: String,
+    pub download_token: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,9 +41,7 @@ impl Config {
     /// Load configuration from Shuttle SecretStore
     pub fn from_secrets(secrets: shuttle_runtime::SecretStore) -> Result<Self> {
         // Helper function to get secret from SecretStore
-        let get_secret = |key: &str| -> Option<String> {
-            secrets.get(key)
-        };
+        let get_secret = |key: &str| -> Option<String> { secrets.get(key) };
 
         let server = ServerConfig {
             host: get_secret("SERVER_HOST").unwrap_or_else(|| "0.0.0.0".to_string()),
@@ -67,7 +66,10 @@ impl Config {
         )?;
 
         // Remove surrounding quotes (single or double) to handle shell escaping
-        let password_hash = password_hash_raw.trim_matches('\'').trim_matches('"').to_string();
+        let password_hash = password_hash_raw
+            .trim_matches('\'')
+            .trim_matches('"')
+            .to_string();
 
         // Validate username
         if username.len() < 3 {
@@ -110,6 +112,9 @@ impl Config {
         let auth = AuthConfig {
             username,
             password_hash,
+            download_token: get_secret("MRPACK_DOWNLOAD_TOKEN").context(
+                "MRPACK_DOWNLOAD_TOKEN is required and must match the launcher configuration",
+            )?,
         };
 
         let storage = StorageConfig {
@@ -151,10 +156,8 @@ impl Config {
     /// Validate the configuration for security issues
     fn validate(&self) -> Result<()> {
         // Check if running in production mode
-        let is_production = std::env::var("RUST_ENV")
-            .unwrap_or_default()
-            .to_lowercase()
-            == "production";
+        let is_production =
+            std::env::var("RUST_ENV").unwrap_or_default().to_lowercase() == "production";
 
         if is_production {
             // In production, enforce security requirements
@@ -182,15 +185,19 @@ impl Config {
         if self.storage.max_file_size_mb == 0 || self.storage.max_file_size_mb > 10240 {
             anyhow::bail!("MAX_FILE_SIZE_MB must be between 1 and 10240 (10GB)");
         }
-        
+
         // Validate username length
         if self.auth.username.len() < 4 {
             anyhow::bail!("USERNAME must be at least 4 characters long");
         }
-        
+
         // Validate password hash length
         if self.auth.password_hash.len() < 64 {
             anyhow::bail!("PASSWORD_HASH must be at least 64 characters long");
+        }
+
+        if self.auth.download_token.trim().len() < 32 {
+            anyhow::bail!("MRPACK_DOWNLOAD_TOKEN must be at least 32 characters long");
         }
 
         Ok(())
@@ -223,6 +230,7 @@ mod tests {
             auth: AuthConfig {
                 username: "admin".to_string(),
                 password_hash: "$argon2id$v=19$m=19456,t=2,p=1$...".to_string(),
+                download_token: "a".repeat(32),
             },
             storage: StorageConfig {
                 directory: "storage".into(),
@@ -248,6 +256,7 @@ mod tests {
             auth: AuthConfig {
                 username: "ab".to_string(), // Too short
                 password_hash: "$argon2id$v=19$m=19456,t=2,p=1$...".to_string(),
+                download_token: "a".repeat(32),
             },
             storage: StorageConfig {
                 directory: "storage".into(),

@@ -49,15 +49,14 @@ async fn main(
 }
 
 fn init_logging() -> Result<()> {
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| {
-            let default_level = if cfg!(debug_assertions) {
-                "mrpack_api=debug,tower_http=debug,axum=debug"
-            } else {
-                "mrpack_api=info,tower_http=info,axum=info"
-            };
-            default_level.into()
-        });
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        let default_level = if cfg!(debug_assertions) {
+            "mrpack_api=debug,tower_http=debug,axum=debug"
+        } else {
+            "mrpack_api=info,tower_http=info,axum=info"
+        };
+        default_level.into()
+    });
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -74,10 +73,16 @@ fn init_logging() -> Result<()> {
 }
 
 fn build_app(config: Arc<Config>) -> Result<Router> {
-    let public_routes = Router::new()
-        .route("/api/health", get(handlers::health_check))
+    let launcher_routes = Router::new()
         .route("/api/info", get(handlers::info_modpack))
         .route("/api/download", get(handlers::download_modpack))
+        .layer(middleware::from_fn_with_state(
+            config.clone(),
+            auth::download_auth_middleware,
+        ));
+
+    let public_routes = Router::new()
+        .route("/api/health", get(handlers::health_check))
         .route("/api/login", post(handlers::login));
 
     let admin_routes = Router::new()
@@ -88,8 +93,7 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
             auth::auth_middleware,
         ));
 
-    let static_service = ServeDir::new("static")
-        .append_index_html_on_directories(true);
+    let static_service = ServeDir::new("static").append_index_html_on_directories(true);
 
     let cors_layer = if config.allow_all_origins() {
         tracing::warn!("⚠️  CORS: Allowing all origins (not recommended for production)");
@@ -99,11 +103,8 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
             .allow_headers(Any)
     } else if let Some(origins) = &config.security.allowed_origins {
         tracing::info!("CORS: Allowing specific origins: {origins:?}");
-        let allowed_origins: Vec<_> = origins
-            .iter()
-            .filter_map(|o| o.parse().ok())
-            .collect();
-        
+        let allowed_origins: Vec<_> = origins.iter().filter_map(|o| o.parse().ok()).collect();
+
         CorsLayer::new()
             .allow_origin(allowed_origins)
             .allow_methods(Any)
@@ -118,6 +119,7 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
     let max_body_size = config.storage.max_file_size_mb * 1024 * 1024;
     let app = Router::new()
         .merge(public_routes)
+        .merge(launcher_routes)
         .merge(admin_routes)
         .fallback_service(static_service)
         .layer(DefaultBodyLimit::max(max_body_size))
@@ -129,7 +131,10 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
         )
         .with_state(config.clone());
 
-    tracing::info!("Max upload size configured: {} MB", config.storage.max_file_size_mb);
+    tracing::info!(
+        "Max upload size configured: {} MB",
+        config.storage.max_file_size_mb
+    );
 
     Ok(app)
 }
