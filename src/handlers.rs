@@ -93,6 +93,7 @@ async fn extract_modpack_info(
     let mut archive = ZipArchive::new(file)?;
 
     let index = read_modrinth_index(&mut archive)?;
+    validate_modrinth_index(&index)?;
 
     let (loader, loader_version) = extract_loader_info(&index.dependencies);
     let manifest_paths: HashSet<String> =
@@ -314,20 +315,17 @@ pub async fn info_modpack(State(config): State<Arc<Config>>) -> ResponseResult<J
     let file_size = metadata.len();
     let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
 
-    let modpack_info = match extract_modpack_info(&file_path).await {
-        Ok(info) => Some(info),
-        Err(why) => {
-            tracing::warn!("Failed to extract modpack info: {why}");
-            None
-        }
-    };
+    let modpack_info = extract_modpack_info(&file_path).await.map_err(|why| {
+        tracing::error!("Stored modpack is invalid: {why}");
+        AppError::Internal("Stored modpack is invalid".to_string())
+    })?;
 
     let modpack_details = ModpackDetails::builder()
         .available(true)
         .file_name(MRPACK_FILENAME.to_string())
         .file_size(file_size)
         .file_size_mb(file_size_mb)
-        .maybe_modpack_info(modpack_info)
+        .modpack_info(modpack_info)
         .build();
 
     Ok(Json(modpack_details))
@@ -674,19 +672,46 @@ fn validate_mrpack_archive(data: &[u8]) -> ResponseResult<()> {
     let index = read_modrinth_index(&mut archive)
         .map_err(|why| AppError::Validation(format!("Invalid modrinth.index.json: {why}")))?;
 
-    if !index.game.eq_ignore_ascii_case("minecraft") {
-        return Err(AppError::Validation(
-            "mrpack game must be minecraft".to_string(),
-        ));
-    }
+    validate_modrinth_index(&index)
+        .map_err(|why| AppError::Validation(format!("Invalid modrinth.index.json: {why}")))?;
 
     for file in &index.files {
         validate_archive_path(&file.path)?;
-        if file.downloads.is_empty() {
-            return Err(AppError::Validation(format!(
-                "Mod entry '{}' has no download URLs",
-                file.path
-            )));
+    }
+
+    Ok(())
+}
+
+fn validate_modrinth_index(index: &ModrinthIndex) -> anyhow::Result<()> {
+    if !index.game.eq_ignore_ascii_case("minecraft") {
+        anyhow::bail!("game must be minecraft");
+    }
+
+    if index.name.trim().is_empty() || index.version_id.trim().is_empty() {
+        anyhow::bail!("name and versionId must not be empty");
+    }
+
+    if index
+        .dependencies
+        .get("minecraft")
+        .is_none_or(|version| version.trim().is_empty())
+    {
+        anyhow::bail!("minecraft dependency is missing");
+    }
+
+    for file in &index.files {
+        if file.path.trim().is_empty() {
+            anyhow::bail!("a mod entry has an empty path");
+        }
+        if file.downloads.iter().all(|url| url.trim().is_empty()) {
+            anyhow::bail!("mod entry '{}' has no download URL", file.path);
+        }
+        if file
+            .hashes
+            .get("sha1")
+            .is_none_or(|hash| hash.trim().is_empty())
+        {
+            anyhow::bail!("mod entry '{}' has no SHA-1 hash", file.path);
         }
     }
 
@@ -954,6 +979,42 @@ mod tests {
         assert!(validate_archive_path("/absolute.jar").is_err());
         assert!(validate_archive_path("overrides//evil.jar").is_err());
         assert!(validate_archive_path("C:/evil.jar").is_err());
+    }
+
+    #[test]
+    fn test_validate_modrinth_index_requires_minecraft() {
+        let index = ModrinthIndex {
+            format_version: 1,
+            game: "minecraft".to_string(),
+            version_id: "1.0.0".to_string(),
+            name: "Pixel Client".to_string(),
+            summary: None,
+            files: Vec::new(),
+            dependencies: HashMap::new(),
+        };
+
+        assert!(validate_modrinth_index(&index).is_err());
+    }
+
+    #[test]
+    fn test_validate_modrinth_index_requires_sha1() {
+        let index = ModrinthIndex {
+            format_version: 1,
+            game: "minecraft".to_string(),
+            version_id: "1.0.0".to_string(),
+            name: "Pixel Client".to_string(),
+            summary: None,
+            files: vec![ModFile {
+                path: "mods/example.jar".to_string(),
+                hashes: HashMap::new(),
+                env: None,
+                downloads: vec!["https://example.com/example.jar".to_string()],
+                file_size: 1,
+            }],
+            dependencies: HashMap::from([("minecraft".to_string(), "1.21.1".to_string())]),
+        };
+
+        assert!(validate_modrinth_index(&index).is_err());
     }
 
     #[test]
