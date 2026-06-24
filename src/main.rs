@@ -90,6 +90,12 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
     let protected_launcher_routes = Router::new()
         .route("/api/info", get(handlers::info_modpack))
         .route("/api/download", get(handlers::download_modpack))
+        .route("/api/instances/redeem", post(handlers::redeem_instance_code))
+        .route("/api/instances/{instance_id}/info", get(handlers::info_instance_modpack))
+        .route(
+            "/api/instances/{instance_id}/download",
+            get(handlers::download_instance_modpack),
+        )
         .layer(middleware::from_fn_with_state(
             config.clone(),
             auth::download_auth_middleware,
@@ -100,6 +106,29 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
         .route("/api/delete", delete(handlers::delete_modpack))
         .route("/api/mods", post(handlers::add_mod))
         .route("/api/mods", delete(handlers::remove_mod))
+        .route("/api/admin/instances", get(handlers::list_instances))
+        .route("/api/admin/instances", post(handlers::create_instance))
+        .route("/api/admin/instances/{instance_id}", delete(handlers::delete_instance))
+        .route(
+            "/api/admin/instances/{instance_id}/codes",
+            post(handlers::generate_instance_code),
+        )
+        .route(
+            "/api/admin/instances/{instance_id}/upload",
+            post(handlers::upload_instance_modpack),
+        )
+        .route(
+            "/api/admin/instances/{instance_id}/modpack",
+            delete(handlers::delete_instance_modpack),
+        )
+        .route(
+            "/api/admin/instances/{instance_id}/mods",
+            post(handlers::add_instance_mod),
+        )
+        .route(
+            "/api/admin/instances/{instance_id}/mods",
+            delete(handlers::remove_instance_mod),
+        )
         .layer(middleware::from_fn_with_state(
             config.clone(),
             auth::auth_middleware,

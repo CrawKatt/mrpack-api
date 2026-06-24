@@ -20,7 +20,8 @@ const API_CONFIG = {
         download: '/api/download',
         upload: '/api/upload',
         delete: '/api/delete',
-        mods: '/api/mods'
+        mods: '/api/mods',
+        instances: '/api/admin/instances'
     },
     maxFileSize: 500 * 1024 * 1024, // 500 MB default
     allowedExtensions: ['.mrpack'],
@@ -351,7 +352,10 @@ class UIManager {
             modLoader: document.getElementById('modLoader'),
             loaderVersion: document.getElementById('loaderVersion'),
             modCount: document.getElementById('modCount'),
-            modList: document.getElementById('modList')
+            modList: document.getElementById('modList'),
+            instanceNameInput: document.getElementById('instanceNameInput'),
+            createInstanceBtn: document.getElementById('createInstanceBtn'),
+            instancesList: document.getElementById('instancesList')
         };
     }
 
@@ -653,15 +657,27 @@ class AdminPanel {
         this.setupEventListeners();
         this.setupDragAndDrop();
         this.loadInfo();
+        this.loadInstances();
     }
 
     /**
      * Setup event listeners
      */
     setupEventListeners() {
+        this.ui.elements.createInstanceBtn?.addEventListener("click", () => {
+            this.handleCreateInstance();
+        });
+
+        this.ui.elements.instancesList?.addEventListener("click", (e) => {
+            const button = e.target.closest("[data-action=\"generate-code\"]");
+            if (!button) return;
+            this.handleGenerateCode(button.dataset.instanceId);
+        });
+
         // Refresh button
         this.ui.elements.refreshBtn?.addEventListener('click', () => {
             this.loadInfo();
+        this.loadInstances();
         });
 
         // Delete button

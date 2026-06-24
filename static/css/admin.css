@@ -659,3 +659,73 @@ h2 {
         text-align: left;
     }
 }
+
+.instance-create-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.instance-create-row input {
+    min-height: 42px;
+    padding: 0 12px;
+    border: 1px solid #d7dde8;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+.instances-list {
+    display: grid;
+    gap: 12px;
+}
+
+.instance-admin-card {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 14px;
+    align-items: center;
+    padding: 14px;
+    border: 1px solid #e1e6ef;
+    border-radius: 10px;
+    background: #fff;
+}
+
+.instance-admin-card h3 {
+    margin: 0 0 4px;
+}
+
+.instance-admin-card p,
+.instance-empty {
+    margin: 0;
+    color: #667085;
+    font-size: 13px;
+}
+
+.instance-codes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+    align-items: center;
+}
+
+.instance-codes code {
+    padding: 5px 7px;
+    border-radius: 6px;
+    background: #eef4ff;
+    color: #1d4ed8;
+    font-weight: 700;
+}
+
+.instance-codes span {
+    color: #667085;
+    font-size: 12px;
+}
+
+@media (max-width: 720px) {
+    .instance-create-row,
+    .instance-admin-card {
+        grid-template-columns: 1fr;
+    }
+}
