@@ -1,19 +1,4 @@
-/**
- * Mrpack API - Admin Panel JavaScript
- * 
- * Handles all client-side functionality for the admin panel including:
- * - File uploads with drag & drop
- * - API communication
- * - UI updates and notifications
- * - Form validation
- */
-
-// ============================================================================
-// Configuration
-// ============================================================================
-
 const API_CONFIG = {
-    baseUrl: '/api',
     endpoints: {
         health: '/api/health',
         info: '/api/info',
@@ -23,290 +8,156 @@ const API_CONFIG = {
         mods: '/api/mods',
         instances: '/api/admin/instances'
     },
-    maxFileSize: 500 * 1024 * 1024, // 500 MB default
+    maxFileSize: 500 * 1024 * 1024,
     allowedExtensions: ['.mrpack'],
     allowedModExtensions: ['.jar'],
-    uploadTimeout: 600000, // 10 minutes
+    uploadTimeout: 600000,
     loginUrl: '/login.html'
 };
-
-// ============================================================================
-// Authentication Manager
-// ============================================================================
 
 class AuthManager {
     constructor() {
         this.sessionKey = 'mrpack_auth_session';
     }
 
-    /**
-     * Get stored credentials
-     */
     getCredentials() {
         return sessionStorage.getItem(this.sessionKey);
     }
 
-    /**
-     * Check if user is authenticated
-     */
     isAuthenticated() {
         return this.getCredentials() !== null;
     }
 
-    /**
-     * Redirect to login page
-     */
     redirectToLogin() {
         window.location.href = API_CONFIG.loginUrl;
     }
 
-    /**
-     * Clear credentials and logout
-     */
     logout() {
         sessionStorage.removeItem(this.sessionKey);
         localStorage.removeItem(this.sessionKey);
         this.redirectToLogin();
     }
 
-    /**
-     * Get authorization header
-     */
     getAuthHeader() {
         const credentials = this.getCredentials();
-        return credentials ? { 'Authorization': `Basic ${credentials}` } : {};
+        return credentials ? { Authorization: `Basic ${credentials}` } : {};
     }
 }
 
-// ============================================================================
-// API Client
-// ============================================================================
-
 class ApiClient {
-    constructor(baseUrl, authManager) {
-        this.baseUrl = baseUrl;
+    constructor(authManager) {
         this.authManager = authManager;
     }
 
-    /**
-     * Make an API request
-     * @param {string} endpoint - API endpoint
-     * @param {Object} options - Fetch options
-     * @returns {Promise<Object>} Response data
-     */
     async request(endpoint, options = {}) {
-        try {
-            const response = await fetch(endpoint, {
-                ...options,
-                headers: {
-                    ...options.headers,
-                    ...this.authManager.getAuthHeader()
-                }
-            });
-
-            // Handle non-JSON responses (like file downloads)
-            const contentType = response.headers.get('content-type');
-            if (contentType && contentType.includes('application/json')) {
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    // Handle authentication errors
-                    if (response.status === 401) {
-                        this.authManager.logout();
-                        return;
-                    }
-                    throw new Error(data.error || `HTTP error ${response.status}`);
-                }
-                
-                return data;
+        const response = await fetch(endpoint, {
+            ...options,
+            headers: {
+                ...options.headers,
+                ...this.authManager.getAuthHeader()
             }
+        });
 
-            if (!response.ok) {
-                // Handle authentication errors
-                if (response.status === 401) {
-                    this.authManager.logout();
-                    return;
-                }
-                throw new Error(`HTTP error ${response.status}`);
+        const contentType = response.headers.get('content-type') || '';
+        const isJson = contentType.includes('application/json');
+        const data = isJson ? await response.json() : null;
+
+        if (!response.ok) {
+            if (response.status === 401) {
+                this.authManager.logout();
+                return null;
             }
-
-            return response;
-        } catch (error) {
-            console.error('API request failed:', error);
-            throw error;
+            throw new Error(data?.error || data?.message || `HTTP error ${response.status}`);
         }
+
+        return data ?? response;
     }
 
-    /**
-     * Get health status
-     */
-    async getHealth() {
-        return this.request(API_CONFIG.endpoints.health);
-    }
-
-    /**
-     * Get modpack information
-     */
     async getInfo() {
         return this.request(API_CONFIG.endpoints.info);
     }
 
-    /**
-     * Upload a modpack file
-     * @param {File} file - File to upload
-     * @param {Function} onProgress - Progress callback
-     */
-    async uploadFile(file, onProgress = null) {
-        const formData = new FormData();
-        formData.append('file', file);
+    async listInstances() {
+        return this.request(API_CONFIG.endpoints.instances);
+    }
 
-        return new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-
-            // Progress tracking
-            if (onProgress) {
-                xhr.upload.addEventListener('progress', (e) => {
-                    if (e.lengthComputable) {
-                        const percentComplete = (e.loaded / e.total) * 100;
-                        onProgress(percentComplete);
-                    }
-                });
-            }
-
-            // Success handler
-            xhr.addEventListener('load', () => {
-                if (xhr.status >= 200 && xhr.status < 300) {
-                    try {
-                        const response = JSON.parse(xhr.responseText);
-                        resolve(response);
-                    } catch (e) {
-                        reject(new Error('Invalid JSON response'));
-                    }
-                } else {
-                    try {
-                        const error = JSON.parse(xhr.responseText);
-                        reject(new Error(error.error || `Upload failed: ${xhr.status}`));
-                    } catch (e) {
-                        reject(new Error(`Upload failed: ${xhr.status}`));
-                    }
-                }
-            });
-
-            // Error handler
-            xhr.addEventListener('error', () => {
-                reject(new Error('Network error during upload'));
-            });
-
-            // Timeout handler
-            xhr.addEventListener('timeout', () => {
-                reject(new Error('Upload timeout'));
-            });
-
-            xhr.timeout = API_CONFIG.uploadTimeout;
-            xhr.open('POST', API_CONFIG.endpoints.upload);
-            
-            // Set authorization header
-            const authHeader = this.authManager.getAuthHeader();
-            if (authHeader.Authorization) {
-                xhr.setRequestHeader('Authorization', authHeader.Authorization);
-            }
-            
-            xhr.send(formData);
+    async createInstance(name) {
+        return this.request(API_CONFIG.endpoints.instances, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
         });
     }
 
-    /**
-     * Add a jar file to the current mrpack overrides.
-     * @param {File} file - Mod jar to upload
-     * @param {Function} onProgress - Progress callback
-     */
+    async generateInstanceCode(instanceId, maxUses = 1) {
+        return this.request(`${API_CONFIG.endpoints.instances}/${encodeURIComponent(instanceId)}/codes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ maxUses })
+        });
+    }
+
+    async uploadFile(file, onProgress = null) {
+        return this.uploadMultipart(API_CONFIG.endpoints.upload, file, onProgress);
+    }
+
     async addModFile(file, onProgress = null) {
+        return this.uploadMultipart(API_CONFIG.endpoints.mods, file, onProgress);
+    }
+
+    async uploadMultipart(endpoint, file, onProgress = null) {
         const formData = new FormData();
         formData.append('file', file);
 
         return new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
-
             if (onProgress) {
-                xhr.upload.addEventListener('progress', (e) => {
-                    if (e.lengthComputable) {
-                        onProgress((e.loaded / e.total) * 100);
-                    }
+                xhr.upload.addEventListener('progress', (event) => {
+                    if (event.lengthComputable) onProgress((event.loaded / event.total) * 100);
                 });
             }
-
             xhr.addEventListener('load', () => {
                 if (xhr.status >= 200 && xhr.status < 300) {
-                    try {
-                        resolve(JSON.parse(xhr.responseText));
-                    } catch (e) {
-                        reject(new Error('Invalid JSON response'));
-                    }
+                    try { resolve(JSON.parse(xhr.responseText)); }
+                    catch { reject(new Error('Invalid JSON response')); }
                     return;
                 }
-
                 if (xhr.status === 401) {
                     this.authManager.logout();
                     return;
                 }
-
                 try {
                     const error = JSON.parse(xhr.responseText);
-                    reject(new Error(error.error || `Mod upload failed: ${xhr.status}`));
-                } catch (e) {
-                    reject(new Error(`Mod upload failed: ${xhr.status}`));
+                    reject(new Error(error.error || `Upload failed: ${xhr.status}`));
+                } catch {
+                    reject(new Error(`Upload failed: ${xhr.status}`));
                 }
             });
-
-            xhr.addEventListener('error', () => {
-                reject(new Error('Network error during mod upload'));
-            });
-
-            xhr.addEventListener('timeout', () => {
-                reject(new Error('Mod upload timeout'));
-            });
-
+            xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+            xhr.addEventListener('timeout', () => reject(new Error('Upload timeout')));
             xhr.timeout = API_CONFIG.uploadTimeout;
-            xhr.open('POST', API_CONFIG.endpoints.mods);
-
+            xhr.open('POST', endpoint);
             const authHeader = this.authManager.getAuthHeader();
-            if (authHeader.Authorization) {
-                xhr.setRequestHeader('Authorization', authHeader.Authorization);
-            }
-
+            if (authHeader.Authorization) xhr.setRequestHeader('Authorization', authHeader.Authorization);
             xhr.send(formData);
         });
     }
 
-    /**
-     * Delete the current modpack
-     */
     async deleteFile() {
-        return this.request(API_CONFIG.endpoints.delete, {
-            method: 'DELETE'
-        });
+        return this.request(API_CONFIG.endpoints.delete, { method: 'DELETE' });
     }
 
-    /**
-     * Remove a mod by its mrpack path.
-     */
     async removeMod(path) {
         return this.request(API_CONFIG.endpoints.mods, {
             method: 'DELETE',
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ path })
         });
     }
 
-    /**
-     * Download the current modpack with admin credentials.
-     */
     async downloadFile() {
         const response = await this.request(API_CONFIG.endpoints.download);
         if (!response) return;
-
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -318,10 +169,6 @@ class ApiClient {
         window.URL.revokeObjectURL(url);
     }
 }
-
-// ============================================================================
-// UI Manager
-// ============================================================================
 
 class UIManager {
     constructor() {
@@ -346,7 +193,7 @@ class UIManager {
             alertContainer: document.getElementById('alertContainer'),
             modpackDetails: document.getElementById('modpackDetails'),
             modpackName: document.getElementById('modpackName'),
-            modpackVersion: document.getElementById("modpackVersion"),
+            modpackVersion: document.getElementById('modpackVersion'),
             formatVersion: document.getElementById('formatVersion'),
             minecraftVersion: document.getElementById('minecraftVersion'),
             modLoader: document.getElementById('modLoader'),
@@ -359,133 +206,100 @@ class UIManager {
         };
     }
 
-    /**
-     * Show loading indicator
-     */
     showLoading(show = true) {
-        if (this.elements.loadingIndicator) {
-            this.elements.loadingIndicator.classList.toggle('show', show);
-        }
+        this.elements.loadingIndicator?.classList.toggle('show', show);
     }
 
-    /**
-     * Show alert message
-     * @param {string} message - Alert message
-     * @param {string} type - Alert type (success, error, info)
-     * @param {number} duration - Duration in milliseconds
-     */
     showAlert(message, type = 'info', duration = 5000) {
         const alert = document.createElement('div');
         alert.className = `alert alert-${type} show`;
-
         const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
         alert.innerHTML = `<span>${icon}</span><span>${this.escapeHtml(message)}</span>`;
-
-        this.elements.alertContainer.appendChild(alert);
-
+        this.elements.alertContainer?.appendChild(alert);
         setTimeout(() => {
             alert.classList.remove('show');
             setTimeout(() => alert.remove(), 300);
         }, duration);
     }
 
-    /**
-     * Update file information display
-     * @param {Object} info - File information
-     */
     updateFileInfo(info) {
-        if (info.available) {
-            this.elements.fileStatus.textContent = 'Available';
-            this.elements.fileStatus.className = 'status-badge status-available';
-            this.elements.fileName.textContent = info.file_name;
-            this.elements.fileSize.textContent = this.formatBytes(info.file_size);
-            this.elements.deleteBtn.disabled = false;
-            if (this.elements.downloadBtn) this.elements.downloadBtn.disabled = false;
-            if (this.elements.addModBtn && this.elements.selectedModFileName?.textContent) {
-                this.elements.addModBtn.disabled = false;
-            }
+        const available = info?.available === true;
+        this.elements.fileStatus.textContent = available ? 'Available' : 'Not available';
+        this.elements.fileStatus.className = `status-badge ${available ? 'status-available' : 'status-unavailable'}`;
+        this.elements.fileName.textContent = available ? info.file_name : '-';
+        this.elements.fileSize.textContent = available ? this.formatBytes(info.file_size) : '-';
+        this.elements.deleteBtn.disabled = !available;
+        if (this.elements.downloadBtn) this.elements.downloadBtn.disabled = !available;
+        if (this.elements.addModBtn) this.elements.addModBtn.disabled = !available || !this.elements.selectedModFileName?.textContent;
 
-            // Mostrar detalles del modpack si están disponibles
-            if (info.modpack_info) {
-                this.updateModpackDetails(info.modpack_info);
-                this.elements.modpackDetails.style.display = 'block';
-            } else {
-                this.elements.modpackDetails.style.display = 'none';
-            }
+        if (available && info.modpack_info) {
+            this.updateModpackDetails(info.modpack_info);
+            this.elements.modpackDetails.style.display = 'block';
         } else {
-            this.elements.fileStatus.textContent = 'Not available';
-            this.elements.fileStatus.className = 'status-badge status-unavailable';
-            this.elements.fileName.textContent = '-';
-            this.elements.fileSize.textContent = '-';
-            this.elements.deleteBtn.disabled = true;
-            if (this.elements.downloadBtn) this.elements.downloadBtn.disabled = true;
-            if (this.elements.addModBtn) this.elements.addModBtn.disabled = true;
             this.elements.modpackDetails.style.display = 'none';
         }
     }
 
-    /**
-     * Update modpack details display
-     * @param {Object} modpackInfo - Modpack information
-     */
     updateModpackDetails(modpackInfo) {
         this.elements.modpackName.textContent = modpackInfo.name || '-';
-        this.elements.modpackVersion.textContent = modpackInfo.version_id || '-';        // Nueva
-        this.elements.formatVersion.textContent = modpackInfo.format_version || '-';     // Nueva
+        this.elements.modpackVersion.textContent = modpackInfo.version_id || '-';
+        this.elements.formatVersion.textContent = modpackInfo.format_version || '-';
         this.elements.minecraftVersion.textContent = modpackInfo.minecraft_version || '-';
         this.elements.modLoader.textContent = modpackInfo.loader || '-';
         this.elements.loaderVersion.textContent = modpackInfo.loader_version || '-';
         this.elements.modCount.textContent = modpackInfo.mod_count || '0';
-
-        // Actualizar lista de mods
         this.elements.modList.innerHTML = '';
 
-        if (modpackInfo.mods && modpackInfo.mods.length > 0) {
-            modpackInfo.mods.forEach(mod => {
-                const modItem = document.createElement('div');
-                modItem.className = 'mod-item';
-
-                const name = document.createElement('span');
-                name.className = 'mod-name';
-                name.textContent = mod.name || mod.path || 'unknown';
-                name.title = mod.path || '';
-
-                const source = document.createElement('span');
-                source.className = 'mod-source';
-                source.textContent = mod.source || 'manifest';
-
-                const env = document.createElement('span');
-                env.className = 'mod-env';
-                env.textContent = mod.environment || 'both';
-
-                const size = document.createElement('span');
-                size.className = 'mod-size';
-                size.textContent = `${(mod.file_size / 1024).toFixed(1)} KB`;
-
-                const removeButton = document.createElement('button');
-                removeButton.className = 'mod-remove-btn';
-                removeButton.type = 'button';
-                removeButton.textContent = 'Remove';
-                removeButton.dataset.action = 'remove-mod';
-                removeButton.dataset.modPath = mod.path || '';
-                removeButton.dataset.modName = mod.name || mod.path || 'mod';
-
-                modItem.append(name, source, env, size, removeButton);
-                this.elements.modList.appendChild(modItem);
-            });
-        } else {
+        if (!modpackInfo.mods?.length) {
             this.elements.modList.innerHTML = '<p>No mods information available</p>';
+            return;
         }
+
+        modpackInfo.mods.forEach((mod) => {
+            const modItem = document.createElement('div');
+            modItem.className = 'mod-item';
+            modItem.innerHTML = `
+                <span class="mod-name" title="${this.escapeHtml(mod.path || '')}">${this.escapeHtml(mod.name || mod.path || 'unknown')}</span>
+                <span class="mod-source">${this.escapeHtml(mod.source || 'manifest')}</span>
+                <span class="mod-env">${this.escapeHtml(mod.environment || 'both')}</span>
+                <span class="mod-size">${((mod.file_size || 0) / 1024).toFixed(1)} KB</span>
+                <button class="mod-remove-btn" type="button" data-action="remove-mod" data-mod-path="${this.escapeHtml(mod.path || '')}" data-mod-name="${this.escapeHtml(mod.name || mod.path || 'mod')}">Remove</button>
+            `;
+            this.elements.modList.appendChild(modItem);
+        });
     }
 
-    /**
-     * Update selected file display
-     * @param {File|null} file - Selected file
-     */
+    updateInstances(instances) {
+        if (!this.elements.instancesList) return;
+        this.elements.instancesList.innerHTML = '';
+        if (!instances?.length) {
+            this.elements.instancesList.innerHTML = '<p class="instance-empty">No instances created yet.</p>';
+            return;
+        }
+
+        instances.forEach((instance) => {
+            const item = document.createElement('div');
+            item.className = 'instance-admin-card';
+            const codes = (instance.codes || []).map((code) => {
+                const maxUses = code.maxUses ?? code.max_uses;
+                const usage = maxUses ? `${code.uses}/${maxUses}` : `${code.uses}`;
+                return `<div class="instance-code-row"><code>${this.escapeHtml(code.code)}</code><span>${usage} uses</span><button class="btn btn-success btn-copy-code" type="button" data-action="copy-code" data-code="${this.escapeHtml(code.code)}">Copy</button></div>`;
+            }).join('');
+            item.innerHTML = `
+                <div>
+                    <h3>${this.escapeHtml(instance.name)}</h3>
+                    <p>${this.escapeHtml(instance.id)} · whitelist: ${instance.whitelist_count || 0} · modpack: ${instance.modpack?.available ? 'available' : 'missing'}</p>
+                    <div class="instance-codes">${codes || '<span>No codes yet</span>'}</div>
+                </div>
+                <button class="btn btn-success" type="button" data-action="generate-code" data-instance-id="${this.escapeHtml(instance.id)}">Generate Code</button>
+            `;
+            this.elements.instancesList.appendChild(item);
+        });
+    }
+
     updateSelectedFile(file) {
         if (file) {
-            this.elements.selectedFileName.textContent =
-                `${file.name} (${this.formatBytes(file.size)})`;
+            this.elements.selectedFileName.textContent = `${file.name} (${this.formatBytes(file.size)})`;
             this.elements.selectedFile.classList.add('show');
             this.elements.uploadBtn.disabled = false;
         } else {
@@ -494,17 +308,10 @@ class UIManager {
         }
     }
 
-    /**
-     * Update selected mod jar display
-     * @param {File|null} file - Selected jar
-     * @param {boolean} modpackAvailable - Whether a mrpack exists
-     */
     updateSelectedModFile(file, modpackAvailable = true) {
         if (!this.elements.selectedModFile || !this.elements.addModBtn) return;
-
         if (file) {
-            this.elements.selectedModFileName.textContent =
-                `${file.name} (${this.formatBytes(file.size)})`;
+            this.elements.selectedModFileName.textContent = `${file.name} (${this.formatBytes(file.size)})`;
             this.elements.selectedModFile.classList.add('show');
             this.elements.addModBtn.disabled = !modpackAvailable;
         } else {
@@ -513,443 +320,258 @@ class UIManager {
         }
     }
 
-    /**
-     * Set button loading state
-     * @param {HTMLElement} button - Button element
-     * @param {boolean} loading - Loading state
-     * @param {string} text - Button text
-     */
     setButtonLoading(button, loading, text = '') {
+        if (!button) return;
         if (loading) {
             button.disabled = true;
             button.dataset.originalText = button.innerHTML;
-            button.innerHTML = '<div class="spinner"></div> ' + (text || 'Loading...');
+            button.innerHTML = `<div class="spinner"></div> ${text || 'Loading...'}`;
         } else {
             button.disabled = false;
             button.innerHTML = button.dataset.originalText || text;
         }
     }
 
-    /**
-     * Format bytes to human-readable string
-     * @param {number} bytes - Bytes to format
-     * @returns {string} Formatted string
-     */
     formatBytes(bytes) {
-        if (!bytes || bytes === 0) return '0 Bytes';
-
+        if (!bytes) return '0 Bytes';
         const k = 1024;
         const sizes = ['Bytes', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
-
-        return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+        return `${Math.round((bytes / Math.pow(k, i)) * 100) / 100} ${sizes[i]}`;
     }
 
-    /**
-     * Escape HTML to prevent XSS
-     * @param {string} text - Text to escape
-     * @returns {string} Escaped text
-     */
     escapeHtml(text) {
         const div = document.createElement('div');
-        div.textContent = text;
+        div.textContent = String(text ?? '');
         return div.innerHTML;
     }
 }
 
-// ============================================================================
-// File Validator
-// ============================================================================
-
 class FileValidator {
-    /**
-     * Validate file before upload
-     * @param {File} file - File to validate
-     * @returns {Object} Validation result
-     */
-    static validate(file) {
+    static validate(file, allowedExtensions = API_CONFIG.allowedExtensions) {
         const errors = [];
-
-        // Check if file exists
-        if (!file) {
-            errors.push('No file selected');
-            return { valid: false, errors };
-        }
-
-        // Check file extension
-        const extension = '.' + file.name.split('.').pop().toLowerCase();
-        if (!API_CONFIG.allowedExtensions.includes(extension)) {
-            errors.push(`Invalid file type. Only ${API_CONFIG.allowedExtensions.join(', ')} files are allowed`);
-        }
-
-        // Check file size
-        if (file.size > API_CONFIG.maxFileSize) {
-            const maxSizeMB = API_CONFIG.maxFileSize / (1024 * 1024);
-            errors.push(`File size exceeds maximum allowed size of ${maxSizeMB} MB`);
-        }
-
-        // Check if file is empty
-        if (file.size === 0) {
-            errors.push('File is empty');
-        }
-
-        return {
-            valid: errors.length === 0,
-            errors
-        };
-    }
-
-    static validateModJar(file) {
-        const errors = [];
-
-        if (!file) {
-            errors.push('No file selected');
-            return { valid: false, errors };
-        }
-
-        const extension = '.' + file.name.split('.').pop().toLowerCase();
-        if (!API_CONFIG.allowedModExtensions.includes(extension)) {
-            errors.push(`Invalid file type. Only ${API_CONFIG.allowedModExtensions.join(', ')} files are allowed`);
-        }
-
-        if (file.size > API_CONFIG.maxFileSize) {
-            const maxSizeMB = API_CONFIG.maxFileSize / (1024 * 1024);
-            errors.push(`File size exceeds maximum allowed size of ${maxSizeMB} MB`);
-        }
-
-        if (file.size === 0) {
-            errors.push('File is empty');
-        }
-
-        return {
-            valid: errors.length === 0,
-            errors
-        };
+        if (!file) return { valid: false, errors: ['No file selected'] };
+        const extension = `.${file.name.split('.').pop().toLowerCase()}`;
+        if (!allowedExtensions.includes(extension)) errors.push(`Invalid file type. Only ${allowedExtensions.join(', ')} files are allowed`);
+        if (file.size > API_CONFIG.maxFileSize) errors.push(`File size exceeds maximum allowed size of ${API_CONFIG.maxFileSize / (1024 * 1024)} MB`);
+        if (file.size === 0) errors.push('File is empty');
+        return { valid: errors.length === 0, errors };
     }
 }
-
-// ============================================================================
-// Admin Panel Application
-// ============================================================================
 
 class AdminPanel {
     constructor() {
         this.authManager = new AuthManager();
-        this.api = new ApiClient(API_CONFIG.baseUrl, this.authManager);
+        this.api = new ApiClient(this.authManager);
         this.ui = new UIManager();
         this.selectedFile = null;
         this.selectedModFile = null;
         this.modpackAvailable = false;
-        
         this.init();
     }
 
-    /**
-     * Initialize the application
-     */
     init() {
-        // Check authentication first
         if (!this.authManager.isAuthenticated()) {
             this.authManager.redirectToLogin();
             return;
         }
-        
         this.setupEventListeners();
         this.setupDragAndDrop();
         this.loadInfo();
         this.loadInstances();
     }
 
-    /**
-     * Setup event listeners
-     */
     setupEventListeners() {
-        this.ui.elements.createInstanceBtn?.addEventListener("click", () => {
-            this.handleCreateInstance();
+        this.ui.elements.createInstanceBtn?.addEventListener('click', () => this.handleCreateInstance());
+        this.ui.elements.instanceNameInput?.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') this.handleCreateInstance();
         });
-
-        this.ui.elements.instancesList?.addEventListener("click", (e) => {
-            const button = e.target.closest("[data-action=\"generate-code\"]");
+        this.ui.elements.instancesList?.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-action]');
             if (!button) return;
-            this.handleGenerateCode(button.dataset.instanceId);
+            if (button.dataset.action === 'generate-code') this.handleGenerateCode(button.dataset.instanceId);
+            if (button.dataset.action === 'copy-code') this.copyText(button.dataset.code);
         });
-
-        // Refresh button
         this.ui.elements.refreshBtn?.addEventListener('click', () => {
             this.loadInfo();
-        this.loadInstances();
+            this.loadInstances();
         });
-
-        // Delete button
-        this.ui.elements.deleteBtn?.addEventListener('click', () => {
-            this.handleDelete();
-        });
-
-        // Download button
-        this.ui.elements.downloadBtn?.addEventListener('click', () => {
-            this.handleDownload();
-        });
-
-        // File input
-        this.ui.elements.fileInput?.addEventListener('change', (e) => {
-            this.handleFileSelect(e.target.files[0]);
-        });
-
-        // Upload button
-        this.ui.elements.uploadBtn?.addEventListener('click', () => {
-            this.handleUpload();
-        });
-
-        // Mod file input
-        this.ui.elements.modFileInput?.addEventListener('change', (e) => {
-            this.handleModFileSelect(e.target.files[0]);
-        });
-
-        // Add mod button
-        this.ui.elements.addModBtn?.addEventListener('click', () => {
-            this.handleAddMod();
-        });
-
-        // Upload area click
-        this.ui.elements.uploadArea?.addEventListener('click', () => {
-            this.ui.elements.fileInput?.click();
-        });
-
-        // Mod upload area click
-        this.ui.elements.modUploadArea?.addEventListener('click', () => {
-            this.ui.elements.modFileInput?.click();
-        });
-
-        // Remove file button
-        document.querySelector('.remove-file')?.addEventListener('click', (e) => {
-            e.stopPropagation();
+        this.ui.elements.deleteBtn?.addEventListener('click', () => this.handleDelete());
+        this.ui.elements.downloadBtn?.addEventListener('click', () => this.handleDownload());
+        this.ui.elements.fileInput?.addEventListener('change', (event) => this.handleFileSelect(event.target.files[0]));
+        this.ui.elements.uploadBtn?.addEventListener('click', () => this.handleUpload());
+        this.ui.elements.modFileInput?.addEventListener('change', (event) => this.handleModFileSelect(event.target.files[0]));
+        this.ui.elements.addModBtn?.addEventListener('click', () => this.handleAddMod());
+        this.ui.elements.uploadArea?.addEventListener('click', () => this.ui.elements.fileInput?.click());
+        this.ui.elements.modUploadArea?.addEventListener('click', () => this.ui.elements.modFileInput?.click());
+        document.querySelector('.remove-file')?.addEventListener('click', (event) => {
+            event.stopPropagation();
             this.clearFileSelection();
         });
-
-        document.querySelector('.remove-mod-file')?.addEventListener('click', (e) => {
-            e.stopPropagation();
+        document.querySelector('.remove-mod-file')?.addEventListener('click', (event) => {
+            event.stopPropagation();
             this.clearModFileSelection();
         });
-
-        this.ui.elements.modList?.addEventListener('click', (e) => {
-            const button = e.target.closest('[data-action="remove-mod"]');
-            if (!button) return;
-
-            this.handleRemoveMod(button.dataset.modPath, button.dataset.modName);
+        this.ui.elements.modList?.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-action="remove-mod"]');
+            if (button) this.handleRemoveMod(button.dataset.modPath, button.dataset.modName);
         });
-
-        // Logout button
         document.getElementById('logoutBtn')?.addEventListener('click', () => {
-            if (confirm('¿Estás seguro que deseas cerrar sesión?')) {
-                this.authManager.logout();
-            }
+            if (confirm('¿Estás seguro que deseas cerrar sesión?')) this.authManager.logout();
         });
     }
 
-    /**
-     * Setup drag and drop functionality
-     */
     setupDragAndDrop() {
-        const uploadArea = this.ui.elements.uploadArea;
-        if (!uploadArea) return;
+        this.setupDropZone(this.ui.elements.uploadArea, (file) => this.handleFileSelect(file));
+        this.setupDropZone(this.ui.elements.modUploadArea, (file) => this.handleModFileSelect(file));
+    }
 
-        // Prevent default drag behaviors
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            uploadArea.addEventListener(eventName, (e) => {
-                e.preventDefault();
-                e.stopPropagation();
+    setupDropZone(element, callback) {
+        if (!element) return;
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach((eventName) => {
+            element.addEventListener(eventName, (event) => {
+                event.preventDefault();
+                event.stopPropagation();
             });
         });
-
-        // Highlight drop area
-        ['dragenter', 'dragover'].forEach(eventName => {
-            uploadArea.addEventListener(eventName, () => {
-                uploadArea.classList.add('drag-over');
-            });
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            uploadArea.addEventListener(eventName, () => {
-                uploadArea.classList.remove('drag-over');
-            });
-        });
-
-        // Handle dropped files
-        uploadArea.addEventListener('drop', (e) => {
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                this.handleFileSelect(files[0]);
-            }
-        });
-
-        const modUploadArea = this.ui.elements.modUploadArea;
-        if (!modUploadArea) return;
-
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            modUploadArea.addEventListener(eventName, (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-            });
-        });
-
-        ['dragenter', 'dragover'].forEach(eventName => {
-            modUploadArea.addEventListener(eventName, () => {
-                modUploadArea.classList.add('drag-over');
-            });
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            modUploadArea.addEventListener(eventName, () => {
-                modUploadArea.classList.remove('drag-over');
-            });
-        });
-
-        modUploadArea.addEventListener('drop', (e) => {
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                this.handleModFileSelect(files[0]);
-            }
+        ['dragenter', 'dragover'].forEach((eventName) => element.addEventListener(eventName, () => element.classList.add('drag-over')));
+        ['dragleave', 'drop'].forEach((eventName) => element.addEventListener(eventName, () => element.classList.remove('drag-over')));
+        element.addEventListener('drop', (event) => {
+            const file = event.dataTransfer.files[0];
+            if (file) callback(file);
         });
     }
 
-    /**
-     * Load modpack information
-     */
     async loadInfo() {
         this.ui.showLoading(true);
-        
         try {
             const info = await this.api.getInfo();
-            this.modpackAvailable = info.available === true;
+            this.modpackAvailable = info?.available === true;
             this.ui.updateFileInfo(info);
             this.ui.updateSelectedModFile(this.selectedModFile, this.modpackAvailable);
         } catch (error) {
             console.error('Failed to load info:', error);
-            this.ui.showAlert('Failed to load modpack information', 'error');
+            this.ui.showAlert(error.message || 'Failed to load modpack information', 'error');
         } finally {
             this.ui.showLoading(false);
         }
     }
 
-    /**
-     * Handle file selection
-     * @param {File} file - Selected file
-     */
-    handleFileSelect(file) {
-        if (!file) return;
+    async loadInstances() {
+        try {
+            const response = await this.api.listInstances();
+            this.ui.updateInstances(response?.instances || []);
+        } catch (error) {
+            console.error('Failed to load instances:', error);
+            this.ui.showAlert(error.message || 'Failed to load instances', 'error');
+        }
+    }
 
-        // Validate file
+    async handleCreateInstance() {
+        const input = this.ui.elements.instanceNameInput;
+        const name = input?.value?.trim();
+        if (!name) {
+            this.ui.showAlert('Instance name is required', 'error');
+            input?.focus();
+            return;
+        }
+        this.ui.setButtonLoading(this.ui.elements.createInstanceBtn, true, 'Creating...');
+        try {
+            await this.api.createInstance(name);
+            input.value = '';
+            this.ui.showAlert('Instance created', 'success');
+            await this.loadInstances();
+        } catch (error) {
+            console.error('Create instance failed:', error);
+            this.ui.showAlert(error.message || 'Failed to create instance', 'error');
+        } finally {
+            this.ui.setButtonLoading(this.ui.elements.createInstanceBtn, false, 'Create Instance');
+        }
+    }
+
+    async handleGenerateCode(instanceId) {
+        if (!instanceId) return;
+        try {
+            const code = await this.api.generateInstanceCode(instanceId, 1);
+            await this.copyText(code.code);
+            this.ui.showAlert(`Generated code: ${code.code}`, 'success', 10000);
+            await this.loadInstances();
+        } catch (error) {
+            console.error('Generate code failed:', error);
+            this.ui.showAlert(error.message || 'Failed to generate code', 'error');
+        }
+    }
+
+    async copyText(value) {
+        if (!value) return;
+        try {
+            await navigator.clipboard?.writeText(value);
+            this.ui.showAlert(`Copied: ${value}`, 'success', 2500);
+        } catch {
+            window.prompt('Copy this code:', value);
+        }
+    }
+
+    handleFileSelect(file) {
         const validation = FileValidator.validate(file);
         if (!validation.valid) {
             this.ui.showAlert(validation.errors.join('. '), 'error');
             this.clearFileSelection();
             return;
         }
-
-        // Update UI
         this.selectedFile = file;
         this.ui.updateSelectedFile(file);
     }
 
-    /**
-     * Clear file selection
-     */
     clearFileSelection() {
         this.selectedFile = null;
         this.ui.elements.fileInput.value = '';
         this.ui.updateSelectedFile(null);
     }
 
-    /**
-     * Handle mod jar selection
-     * @param {File} file - Selected jar
-     */
     handleModFileSelect(file) {
-        if (!file) return;
-
         if (!this.modpackAvailable) {
             this.ui.showAlert('Upload a mrpack before adding mods', 'error');
             this.clearModFileSelection();
             return;
         }
-
-        const validation = FileValidator.validateModJar(file);
+        const validation = FileValidator.validate(file, API_CONFIG.allowedModExtensions);
         if (!validation.valid) {
             this.ui.showAlert(validation.errors.join('. '), 'error');
             this.clearModFileSelection();
             return;
         }
-
         this.selectedModFile = file;
         this.ui.updateSelectedModFile(file, this.modpackAvailable);
     }
 
-    /**
-     * Clear selected mod jar
-     */
     clearModFileSelection() {
         this.selectedModFile = null;
-        if (this.ui.elements.modFileInput) {
-            this.ui.elements.modFileInput.value = '';
-        }
+        if (this.ui.elements.modFileInput) this.ui.elements.modFileInput.value = '';
         this.ui.updateSelectedModFile(null, this.modpackAvailable);
     }
 
-    /**
-     * Handle file upload
-     */
     async handleUpload() {
-        if (!this.selectedFile) {
-            this.ui.showAlert('Please select a file first', 'error');
-            return;
-        }
-
-        const uploadBtn = this.ui.elements.uploadBtn;
-        this.ui.setButtonLoading(uploadBtn, true, 'Uploading...');
-
+        if (!this.selectedFile) return this.ui.showAlert('Please select a file first', 'error');
+        this.ui.setButtonLoading(this.ui.elements.uploadBtn, true, 'Uploading...');
         try {
-            const response = await this.api.uploadFile(this.selectedFile, (progress) => {
-                // Optional: Update progress UI
-                console.log(`Upload progress: ${progress.toFixed(2)}%`);
-            });
-
-            this.ui.showAlert(
-                `File uploaded successfully: ${response.file_name} (${response.file_size_mb.toFixed(2)} MB)`,
-                'success'
-            );
-            
+            const response = await this.api.uploadFile(this.selectedFile);
+            this.ui.showAlert(`File uploaded successfully: ${response.file_name} (${response.file_size_mb.toFixed(2)} MB)`, 'success');
             this.clearFileSelection();
             await this.loadInfo();
         } catch (error) {
             console.error('Upload failed:', error);
             this.ui.showAlert(error.message || 'Failed to upload file', 'error');
         } finally {
-            this.ui.setButtonLoading(uploadBtn, false, '⬆️ Upload File');
+            this.ui.setButtonLoading(this.ui.elements.uploadBtn, false, '⬆️ Upload File');
         }
     }
 
-    /**
-     * Add selected mod jar to current mrpack
-     */
     async handleAddMod() {
-        if (!this.selectedModFile) {
-            this.ui.showAlert('Please select a mod jar first', 'error');
-            return;
-        }
-
-        if (!this.modpackAvailable) {
-            this.ui.showAlert('Upload a mrpack before adding mods', 'error');
-            return;
-        }
-
-        const addModBtn = this.ui.elements.addModBtn;
-        this.ui.setButtonLoading(addModBtn, true, 'Adding...');
-
+        if (!this.selectedModFile) return this.ui.showAlert('Please select a mod jar first', 'error');
+        this.ui.setButtonLoading(this.ui.elements.addModBtn, true, 'Adding...');
         try {
-            const response = await this.api.addModFile(this.selectedModFile, (progress) => {
-                console.log(`Mod upload progress: ${progress.toFixed(2)}%`);
-            });
-
+            const response = await this.api.addModFile(this.selectedModFile);
             this.ui.showAlert(`Mod added: ${response.path}`, 'success');
             this.clearModFileSelection();
             await this.loadInfo();
@@ -957,21 +579,13 @@ class AdminPanel {
             console.error('Mod upload failed:', error);
             this.ui.showAlert(error.message || 'Failed to add mod', 'error');
         } finally {
-            this.ui.setButtonLoading(addModBtn, false, '➕ Add Mod');
+            this.ui.setButtonLoading(this.ui.elements.addModBtn, false, '➕ Add Mod');
             this.ui.updateSelectedModFile(this.selectedModFile, this.modpackAvailable);
         }
     }
 
-    /**
-     * Remove a mod from the current mrpack
-     */
     async handleRemoveMod(path, name) {
-        if (!path) return;
-
-        if (!confirm(`Remove ${name || path} from the mrpack?`)) {
-            return;
-        }
-
+        if (!path || !confirm(`Remove ${name || path} from the mrpack?`)) return;
         try {
             await this.api.removeMod(path);
             this.ui.showAlert(`Mod removed: ${name || path}`, 'success');
@@ -982,29 +596,17 @@ class AdminPanel {
         }
     }
 
-    /**
-     * Download current mrpack with stored admin credentials
-     */
     async handleDownload() {
-        try {
-            await this.api.downloadFile();
-        } catch (error) {
+        try { await this.api.downloadFile(); }
+        catch (error) {
             console.error('Download failed:', error);
             this.ui.showAlert(error.message || 'Failed to download modpack', 'error');
         }
     }
 
-    /**
-     * Handle file deletion
-     */
     async handleDelete() {
-        if (!confirm('Are you sure you want to delete the current modpack?')) {
-            return;
-        }
-
-        const deleteBtn = this.ui.elements.deleteBtn;
-        this.ui.setButtonLoading(deleteBtn, true, 'Deleting...');
-
+        if (!confirm('Are you sure you want to delete the current modpack?')) return;
+        this.ui.setButtonLoading(this.ui.elements.deleteBtn, true, 'Deleting...');
         try {
             await this.api.deleteFile();
             this.ui.showAlert('Modpack deleted successfully', 'success');
@@ -1013,20 +615,13 @@ class AdminPanel {
             console.error('Delete failed:', error);
             this.ui.showAlert(error.message || 'Failed to delete file', 'error');
         } finally {
-            this.ui.setButtonLoading(deleteBtn, false, '🗑️ Delete');
+            this.ui.setButtonLoading(this.ui.elements.deleteBtn, false, '🗑️ Delete');
         }
     }
 }
 
-// ============================================================================
-// Application Entry Point
-// ============================================================================
-
-// Initialize application when DOM is ready
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        new AdminPanel();
-    });
+    document.addEventListener('DOMContentLoaded', () => new AdminPanel());
 } else {
     new AdminPanel();
 }

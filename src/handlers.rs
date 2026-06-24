@@ -106,12 +106,15 @@ struct WhitelistEntry {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct InstanceCode {
-    code: String,
-    instance_id: String,
-    max_uses: Option<u32>,
-    uses: u32,
-    active: bool,
+    pub code: String,
+    #[serde(alias = "instance_id")]
+    pub instance_id: String,
+    #[serde(alias = "max_uses")]
+    pub max_uses: Option<u32>,
+    pub uses: u32,
+    pub active: bool,
 }
 
 #[derive(Serialize)]
@@ -149,7 +152,9 @@ pub struct CreateInstanceRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GenerateCodeRequest {
+    #[serde(alias = "max_uses")]
     pub max_uses: Option<u32>,
 }
 
@@ -403,6 +408,7 @@ pub async fn create_instance(
     State(config): State<Arc<Config>>,
     Json(payload): Json<CreateInstanceRequest>,
 ) -> ResponseResult<Json<AdminInstanceView>> {
+    let _guard = instance_store_lock().lock().await;
     let name = payload.name.trim();
     if name.is_empty() {
         return Err(AppError::BadRequest("Instance name is required".to_string()));
@@ -422,11 +428,11 @@ pub async fn create_instance(
         name: name.to_string(),
         whitelist: Vec::new(),
     };
-    store.instances.insert(id.clone(), instance.clone());
-    save_instance_store(&config, &store).await?;
     fs::create_dir_all(get_instance_dir(&config, &id))
         .await
         .map_err(AppError::FileIo)?;
+    store.instances.insert(id.clone(), instance.clone());
+    save_instance_store(&config, &store).await?;
 
     Ok(Json(AdminInstanceView {
         id: instance.id,
@@ -441,6 +447,7 @@ pub async fn delete_instance(
     State(config): State<Arc<Config>>,
     AxumPath(instance_id): AxumPath<String>,
 ) -> ResponseResult<Json<ApiResponse>> {
+    let _guard = instance_store_lock().lock().await;
     let mut store = load_instance_store(&config).await?;
     if store.instances.remove(&instance_id).is_none() {
         return Err(AppError::FileNotFound("Instance not found".to_string()));
@@ -459,6 +466,7 @@ pub async fn generate_instance_code(
     AxumPath(instance_id): AxumPath<String>,
     Json(payload): Json<GenerateCodeRequest>,
 ) -> ResponseResult<Json<InstanceCode>> {
+    let _guard = instance_store_lock().lock().await;
     let mut store = load_instance_store(&config).await?;
     if !store.instances.contains_key(&instance_id) {
         return Err(AppError::FileNotFound("Instance not found".to_string()));
@@ -485,6 +493,7 @@ pub async fn redeem_instance_code(
     State(config): State<Arc<Config>>,
     Json(payload): Json<RedeemCodeRequest>,
 ) -> ResponseResult<Json<RedeemCodeResponse>> {
+    let _guard = instance_store_lock().lock().await;
     let code_value = normalize_code(&payload.code)?;
     let mut store = load_instance_store(&config).await?;
     let instance_code = store
@@ -1127,6 +1136,11 @@ async fn require_instance_code(
     } else {
         Err(AppError::Forbidden("Invalid instance code".to_string()))
     }
+}
+
+fn instance_store_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 async fn load_instance_store(config: &Config) -> ResponseResult<InstanceStore> {
