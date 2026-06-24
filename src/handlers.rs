@@ -502,11 +502,18 @@ pub async fn redeem_instance_code(
         .ok_or_else(|| AppError::Forbidden("Invalid instance code".to_string()))?;
 
     if !instance_code.active || instance_code.max_uses.is_some_and(|max| instance_code.uses >= max) {
-        return Err(AppError::Forbidden("Instance code is not active".to_string()));
+        return Err(AppError::Forbidden("El código ya fue usado o está desactivado".to_string()));
+    }
+
+    let instance_id = instance_code.instance_id.clone();
+    let modpack = modpack_details_for_path(&get_instance_mrpack_path(&config, &instance_id)).await?;
+    if !modpack.available {
+        return Err(AppError::BadRequest(
+            "La instancia todavía no tiene un modpack cargado desde el panel admin".to_string(),
+        ));
     }
 
     instance_code.uses += 1;
-    let instance_id = instance_code.instance_id.clone();
     let instance = store
         .instances
         .get_mut(&instance_id)
@@ -530,7 +537,6 @@ pub async fn redeem_instance_code(
         name: instance.name.clone(),
         code: code_value.clone(),
     };
-    let modpack = modpack_details_for_path(&get_instance_mrpack_path(&config, &instance_id)).await?;
     save_instance_store(&config, &store).await?;
 
     Ok(Json(RedeemCodeResponse {

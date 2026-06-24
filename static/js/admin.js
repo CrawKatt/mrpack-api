@@ -97,6 +97,22 @@ class ApiClient {
         });
     }
 
+    async uploadInstanceModpack(instanceId, file, onProgress = null) {
+        return this.uploadMultipart(
+            `${API_CONFIG.endpoints.instances}/${encodeURIComponent(instanceId)}/upload`,
+            file,
+            onProgress,
+        );
+    }
+
+    async addInstanceMod(instanceId, file, onProgress = null) {
+        return this.uploadMultipart(
+            `${API_CONFIG.endpoints.instances}/${encodeURIComponent(instanceId)}/mods`,
+            file,
+            onProgress,
+        );
+    }
+
     async uploadFile(file, onProgress = null) {
         return this.uploadMultipart(API_CONFIG.endpoints.upload, file, onProgress);
     }
@@ -285,13 +301,26 @@ class UIManager {
                 const usage = maxUses ? `${code.uses}/${maxUses}` : `${code.uses}`;
                 return `<div class="instance-code-row"><code>${this.escapeHtml(code.code)}</code><span>${usage} uses</span><button class="btn btn-success btn-copy-code" type="button" data-action="copy-code" data-code="${this.escapeHtml(code.code)}">Copy</button></div>`;
             }).join('');
+            const modpackInfo = instance.modpack?.modpack_info;
             item.innerHTML = `
-                <div>
-                    <h3>${this.escapeHtml(instance.name)}</h3>
-                    <p>${this.escapeHtml(instance.id)} · whitelist: ${instance.whitelist_count || 0} · modpack: ${instance.modpack?.available ? 'available' : 'missing'}</p>
+                <div class="instance-card-main">
+                    <div class="instance-card-header">
+                        <div>
+                            <h3>${this.escapeHtml(instance.name)}</h3>
+                            <p>${this.escapeHtml(instance.id)} · whitelist: ${instance.whitelist_count || 0}</p>
+                        </div>
+                        <span class="status-badge ${instance.modpack?.available ? 'status-available' : 'status-unavailable'}">${instance.modpack?.available ? 'Modpack cargado' : 'Sin modpack'}</span>
+                    </div>
+                    <div class="instance-modpack-summary">
+                        ${modpackInfo ? `${this.escapeHtml(modpackInfo.version_id)} · MC ${this.escapeHtml(modpackInfo.minecraft_version)} · ${this.escapeHtml(modpackInfo.loader)} · ${modpackInfo.mod_count} mods` : 'Sube un archivo .mrpack para que esta instancia pueda generar una biblioteca jugable.'}
+                    </div>
                     <div class="instance-codes">${codes || '<span>No codes yet</span>'}</div>
                 </div>
-                <button class="btn btn-success" type="button" data-action="generate-code" data-instance-id="${this.escapeHtml(instance.id)}">Generate Code</button>
+                <div class="instance-actions">
+                    <button class="btn btn-primary" type="button" data-action="upload-instance-modpack" data-instance-id="${this.escapeHtml(instance.id)}">Subir .mrpack</button>
+                    <button class="btn btn-success" type="button" data-action="generate-code" data-instance-id="${this.escapeHtml(instance.id)}" ${instance.modpack?.available ? '' : 'disabled'}>Generar código</button>
+                    <button class="btn btn-success" type="button" data-action="add-instance-mod" data-instance-id="${this.escapeHtml(instance.id)}" ${instance.modpack?.available ? '' : 'disabled'}>Añadir .jar</button>
+                </div>
             `;
             this.elements.instancesList.appendChild(item);
         });
@@ -391,6 +420,8 @@ class AdminPanel {
             if (!button) return;
             if (button.dataset.action === 'generate-code') this.handleGenerateCode(button.dataset.instanceId);
             if (button.dataset.action === 'copy-code') this.copyText(button.dataset.code);
+            if (button.dataset.action === 'upload-instance-modpack') this.handleUploadInstanceModpack(button.dataset.instanceId);
+            if (button.dataset.action === 'add-instance-mod') this.handleAddInstanceMod(button.dataset.instanceId);
         });
         this.ui.elements.refreshBtn?.addEventListener('click', () => {
             this.loadInfo();
@@ -509,6 +540,54 @@ class AdminPanel {
             this.ui.showAlert(`Copied: ${value}`, 'success', 2500);
         } catch {
             window.prompt('Copy this code:', value);
+        }
+    }
+
+    chooseFile(accept) {
+        return new Promise((resolve) => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = accept;
+            input.addEventListener('change', () => resolve(input.files?.[0] || null), { once: true });
+            input.click();
+        });
+    }
+
+    async handleUploadInstanceModpack(instanceId) {
+        if (!instanceId) return;
+        const file = await this.chooseFile('.mrpack');
+        if (!file) return;
+        const validation = FileValidator.validate(file, API_CONFIG.allowedExtensions);
+        if (!validation.valid) {
+            this.ui.showAlert(validation.errors.join('. '), 'error');
+            return;
+        }
+        try {
+            await this.api.uploadInstanceModpack(instanceId, file);
+            this.ui.showAlert(`Modpack uploaded to ${instanceId}`, 'success');
+            await this.loadInstances();
+        } catch (error) {
+            console.error('Instance modpack upload failed:', error);
+            this.ui.showAlert(error.message || 'Failed to upload instance modpack', 'error');
+        }
+    }
+
+    async handleAddInstanceMod(instanceId) {
+        if (!instanceId) return;
+        const file = await this.chooseFile('.jar');
+        if (!file) return;
+        const validation = FileValidator.validate(file, API_CONFIG.allowedModExtensions);
+        if (!validation.valid) {
+            this.ui.showAlert(validation.errors.join('. '), 'error');
+            return;
+        }
+        try {
+            await this.api.addInstanceMod(instanceId, file);
+            this.ui.showAlert(`Mod added to ${instanceId}`, 'success');
+            await this.loadInstances();
+        } catch (error) {
+            console.error('Instance mod upload failed:', error);
+            this.ui.showAlert(error.message || 'Failed to add mod to instance', 'error');
         }
     }
 

@@ -729,3 +729,68 @@ h2 {
         grid-template-columns: 1fr;
     }
 }
+
+/* Instance manager */
+.instance-admin-card {
+    grid-template-columns: minmax(0, 1fr) 190px;
+    align-items: stretch;
+    border-color: #d7e1d9;
+    box-shadow: 0 8px 20px rgba(16, 24, 40, 0.05);
+}
+
+.instance-card-main {
+    min-width: 0;
+}
+
+.instance-card-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.instance-modpack-summary {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #f5fbf6;
+    color: #496252;
+    font-size: 13px;
+}
+
+.instance-actions {
+    display: grid;
+    gap: 8px;
+    align-content: start;
+}
+
+.instance-actions .btn {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 0.9rem;
+}
+
+.instance-code-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px;
+    border: 1px solid #dbe7ff;
+    border-radius: 8px;
+    background: #f8fbff;
+}
+
+.btn-copy-code {
+    padding: 5px 8px;
+    font-size: 0.75rem;
+}
+
+@media (max-width: 720px) {
+    .instance-admin-card {
+        grid-template-columns: 1fr;
+    }
+
+    .instance-card-header {
+        flex-direction: column;
+    }
+}

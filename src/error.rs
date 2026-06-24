@@ -116,7 +116,7 @@ impl IntoResponse for AppError {
                     Json(ErrorResponse::new("Unauthorized - Invalid or missing credentials"))
                 ).into_response();
             },
-            AppError::Forbidden(_) => (StatusCode::FORBIDDEN, "Forbidden".to_string(), true),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone(), true),
             AppError::Configuration(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Server configuration error".to_string(),
