@@ -64,6 +64,10 @@ pub struct ModpackDetails {
     pub file_size: Option<u64>,
     pub file_size_mb: Option<f64>,
     pub modpack_info: Option<ModpackInfo>,
+    pub icon_url: Option<String>,
+    pub background_url: Option<String>,
+    pub icon_kind: Option<String>,
+    pub background_kind: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Builder)]
@@ -590,7 +594,18 @@ pub async fn info_instance_modpack(
     headers: axum::http::HeaderMap,
 ) -> ResponseResult<Json<ModpackDetails>> {
     require_instance_code(&config, &instance_id, &headers).await?;
-    Ok(Json(modpack_details_for_path(&get_instance_mrpack_path(&config, &instance_id)).await?))
+    let store = load_instance_store(&config).await?;
+    let media = store
+        .instances
+        .get(&instance_id)
+        .map(|instance| instance.media.clone())
+        .unwrap_or_default();
+    let mut details = modpack_details_for_path(&get_instance_mrpack_path(&config, &instance_id)).await?;
+    details.icon_url = media.icon_url;
+    details.background_url = media.background_url;
+    details.icon_kind = media.icon_kind;
+    details.background_kind = media.background_kind;
+    Ok(Json(details))
 }
 
 pub async fn download_instance_modpack(
@@ -1891,6 +1906,9 @@ mod tests {
         assert!(!constant_time_compare(b"a", b""));
     }
 }
+
+
+
 
 
 
