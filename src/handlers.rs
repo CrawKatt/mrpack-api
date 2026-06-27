@@ -25,6 +25,8 @@ const MRPACK_FILENAME: &str = "modpack.mrpack";
 const JAR_EXTENSION: &str = ".jar";
 const OVERRIDE_MODS_DIR: &str = "overrides/mods";
 const MODRINTH_INDEX: &str = "modrinth.index.json";
+const INSTANCE_MEDIA_DIR: &str = "media";
+const INSTANCE_MEDIA_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm"];
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ModrinthIndex {
@@ -95,7 +97,10 @@ struct InstanceStore {
 struct StoredInstance {
     id: String,
     name: String,
+    #[serde(default)]
     whitelist: Vec<WhitelistEntry>,
+    #[serde(default)]
+    media: InstanceMedia,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -117,11 +122,23 @@ pub struct InstanceCode {
     pub active: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceMedia {
+    pub icon_url: Option<String>,
+    pub background_url: Option<String>,
+    pub icon_kind: Option<String>,
+    pub background_kind: Option<String>,
+}
+
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InstanceAccess {
     pub id: String,
     pub name: String,
     pub code: String,
+    #[serde(flatten)]
+    pub media: InstanceMedia,
 }
 
 #[derive(Serialize)]
@@ -139,6 +156,7 @@ pub struct AdminInstanceView {
     pub whitelist_count: usize,
     pub codes: Vec<InstanceCode>,
     pub modpack: ModpackDetails,
+    pub media: InstanceMedia,
 }
 
 #[derive(Serialize)]
@@ -147,8 +165,11 @@ pub struct AdminInstancesResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateInstanceRequest {
     pub name: String,
+    pub icon_url: Option<String>,
+    pub background_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -397,6 +418,7 @@ pub async fn list_instances(
             whitelist_count: instance.whitelist.len(),
             codes,
             modpack,
+            media: instance.media.clone(),
         });
     }
 
@@ -423,10 +445,23 @@ pub async fn create_instance(
         suffix += 1;
     }
 
+    let media = InstanceMedia {
+        icon_url: clean_optional_url(payload.icon_url),
+        background_url: clean_optional_url(payload.background_url),
+        icon_kind: None,
+        background_kind: None,
+    };
+    let media = InstanceMedia {
+        icon_kind: media.icon_url.as_deref().and_then(infer_media_kind),
+        background_kind: media.background_url.as_deref().and_then(infer_media_kind),
+        ..media
+    };
+
     let instance = StoredInstance {
         id: id.clone(),
         name: name.to_string(),
         whitelist: Vec::new(),
+        media,
     };
     fs::create_dir_all(get_instance_dir(&config, &id))
         .await
@@ -440,6 +475,7 @@ pub async fn create_instance(
         whitelist_count: 0,
         codes: Vec::new(),
         modpack: unavailable_modpack_details(MRPACK_FILENAME),
+        media: instance.media,
     }))
 }
 
@@ -536,6 +572,7 @@ pub async fn redeem_instance_code(
         id: instance.id.clone(),
         name: instance.name.clone(),
         code: code_value.clone(),
+        media: instance.media.clone(),
     };
     save_instance_store(&config, &store).await?;
 
@@ -582,6 +619,66 @@ pub async fn delete_instance_modpack(
     delete_modpack_at_path(get_instance_mrpack_path(&config, &instance_id)).await
 }
 
+
+pub async fn upload_instance_media(
+    State(config): State<Arc<Config>>,
+    AxumPath((instance_id, slot)): AxumPath<(String, String)>,
+    multipart: Multipart,
+) -> ResponseResult<Json<ApiResponse>> {
+    let _guard = instance_store_lock().lock().await;
+    let slot = normalize_media_slot(&slot)?;
+    let mut store = load_instance_store(&config).await?;
+    if !store.instances.contains_key(&instance_id) {
+        return Err(AppError::FileNotFound("Instance not found".to_string()));
+    }
+
+    let (extension, data) = read_media_upload(multipart).await?;
+    let media_dir = get_instance_media_dir(&config, &instance_id);
+    fs::create_dir_all(&media_dir).await.map_err(AppError::FileIo)?;
+    remove_existing_media_slot(&media_dir, slot).await?;
+    let file_path = media_dir.join(format!("{slot}.{extension}"));
+    fs::write(&file_path, data).await.map_err(AppError::FileIo)?;
+
+    let media_url = format!("/api/media/instances/{}/{}", instance_id, slot);
+    let media_kind = media_kind_from_extension(&extension).map(str::to_string);
+    let instance = store
+        .instances
+        .get_mut(&instance_id)
+        .ok_or_else(|| AppError::FileNotFound("Instance not found".to_string()))?;
+    match slot {
+        "icon" => {
+            instance.media.icon_url = Some(media_url);
+            instance.media.icon_kind = media_kind;
+        }
+        "background" => {
+            instance.media.background_url = Some(media_url);
+            instance.media.background_kind = media_kind;
+        }
+        _ => unreachable!(),
+    }
+    save_instance_store(&config, &store).await?;
+
+    Ok(Json(ApiResponse::success("Instance media uploaded successfully")))
+}
+
+pub async fn serve_instance_media(
+    State(config): State<Arc<Config>>,
+    AxumPath((instance_id, slot)): AxumPath<(String, String)>,
+) -> ResponseResult<Response> {
+    let slot = normalize_media_slot(&slot)?;
+    ensure_instance_exists(&config, &instance_id).await?;
+    let file_path = find_media_file(&get_instance_media_dir(&config, &instance_id), slot).await?;
+    let file = fs::File::open(&file_path).await.map_err(AppError::FileIo)?;
+    let stream = ReaderStream::new(file);
+    let content_type = media_content_type(&file_path);
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "public, max-age=3600")
+        .body(Body::from_stream(stream))
+        .map_err(|why| AppError::Internal(format!("Failed to build media response: {why}")))?)
+}
 pub async fn add_instance_mod(
     State(config): State<Arc<Config>>,
     AxumPath(instance_id): AxumPath<String>,
@@ -1185,6 +1282,112 @@ fn get_instance_mrpack_path(config: &Config, instance_id: &str) -> PathBuf {
     get_instance_dir(config, instance_id).join(MRPACK_FILENAME)
 }
 
+
+fn get_instance_media_dir(config: &Config, instance_id: &str) -> PathBuf {
+    get_instance_dir(config, instance_id).join(INSTANCE_MEDIA_DIR)
+}
+
+fn clean_optional_url(value: Option<String>) -> Option<String> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn infer_media_kind(value: &str) -> Option<String> {
+    let clean = value.split('?').next().unwrap_or(value).to_ascii_lowercase();
+    let extension = clean.rsplit('.').next()?;
+    media_kind_from_extension(extension).map(str::to_string)
+}
+
+fn media_kind_from_extension(extension: &str) -> Option<&'static str> {
+    match extension.to_ascii_lowercase().as_str() {
+        "mp4" | "webm" => Some("video"),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" => Some("image"),
+        _ => None,
+    }
+}
+
+fn media_content_type(file_path: &Path) -> &'static str {
+    match file_path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        _ => "application/octet-stream",
+    }
+}
+
+fn normalize_media_slot(value: &str) -> ResponseResult<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "icon" => Ok("icon"),
+        "background" => Ok("background"),
+        _ => Err(AppError::BadRequest("Invalid media slot".to_string())),
+    }
+}
+
+async fn read_media_upload(mut multipart: Multipart) -> ResponseResult<(String, Vec<u8>)> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|why| AppError::MultipartError(why.to_string()))?
+    {
+        let file_name = field.file_name().map(str::to_string).unwrap_or_else(|| "media".to_string());
+        let extension = file_name
+            .rsplit('.')
+            .next()
+            .map(|value| value.to_ascii_lowercase())
+            .ok_or_else(|| AppError::BadRequest("Media file must have an extension".to_string()))?;
+        if !INSTANCE_MEDIA_EXTENSIONS.contains(&extension.as_str()) {
+            return Err(AppError::BadRequest("Allowed media types: png, jpg, jpeg, webp, gif, mp4, webm".to_string()));
+        }
+        let data = field
+            .bytes()
+            .await
+            .map_err(|why| AppError::MultipartError(format!("Failed to read media data: {why}")))?
+            .to_vec();
+        if data.is_empty() {
+            return Err(AppError::BadRequest("Media file is empty".to_string()));
+        }
+        return Ok((extension, data));
+    }
+
+    Err(AppError::BadRequest("No media file uploaded".to_string()))
+}
+
+async fn remove_existing_media_slot(media_dir: &Path, slot: &str) -> ResponseResult<()> {
+    if !media_dir.exists() {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(media_dir).await.map_err(AppError::FileIo)?;
+    while let Some(entry) = entries.next_entry().await.map_err(AppError::FileIo)? {
+        let path = entry.path();
+        if path.file_stem().and_then(|value| value.to_str()) == Some(slot) {
+            fs::remove_file(path).await.map_err(AppError::FileIo)?;
+        }
+    }
+    Ok(())
+}
+
+async fn find_media_file(media_dir: &Path, slot: &str) -> ResponseResult<PathBuf> {
+    if !media_dir.exists() {
+        return Err(AppError::FileNotFound("Instance media not found".to_string()));
+    }
+    let mut entries = fs::read_dir(media_dir).await.map_err(AppError::FileIo)?;
+    while let Some(entry) = entries.next_entry().await.map_err(AppError::FileIo)? {
+        let path = entry.path();
+        if path.file_stem().and_then(|value| value.to_str()) == Some(slot) {
+            return Ok(path);
+        }
+    }
+    Err(AppError::FileNotFound("Instance media not found".to_string()))
+}
 fn normalize_code(value: &str) -> ResponseResult<String> {
     let code = value.trim().replace('-', "").to_ascii_uppercase();
     if code.len() < 6 || !code.chars().all(|character| character.is_ascii_alphanumeric()) {
@@ -1688,3 +1891,7 @@ mod tests {
         assert!(!constant_time_compare(b"a", b""));
     }
 }
+
+
+
+

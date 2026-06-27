@@ -11,6 +11,7 @@ const API_CONFIG = {
     maxFileSize: 500 * 1024 * 1024,
     allowedExtensions: ['.mrpack'],
     allowedModExtensions: ['.jar'],
+    allowedMediaExtensions: ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp4', '.webm'],
     uploadTimeout: 600000,
     loginUrl: '/login.html'
 };
@@ -81,11 +82,11 @@ class ApiClient {
         return this.request(API_CONFIG.endpoints.instances);
     }
 
-    async createInstance(name) {
+    async createInstance(name, iconUrl = null, backgroundUrl = null) {
         return this.request(API_CONFIG.endpoints.instances, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name })
+            body: JSON.stringify({ name, iconUrl, backgroundUrl })
         });
     }
 
@@ -100,6 +101,14 @@ class ApiClient {
     async uploadInstanceModpack(instanceId, file, onProgress = null) {
         return this.uploadMultipart(
             `${API_CONFIG.endpoints.instances}/${encodeURIComponent(instanceId)}/upload`,
+            file,
+            onProgress,
+        );
+    }
+
+    async uploadInstanceMedia(instanceId, slot, file, onProgress = null) {
+        return this.uploadMultipart(
+            `${API_CONFIG.endpoints.instances}/${encodeURIComponent(instanceId)}/media/${encodeURIComponent(slot)}`,
             file,
             onProgress,
         );
@@ -302,7 +311,16 @@ class UIManager {
                 return `<div class="instance-code-row"><code>${this.escapeHtml(code.code)}</code><span>${usage} uses</span><button class="btn btn-success btn-copy-code" type="button" data-action="copy-code" data-code="${this.escapeHtml(code.code)}">Copy</button></div>`;
             }).join('');
             const modpackInfo = instance.modpack?.modpack_info;
+            const media = instance.media || {};
+            const iconUrl = media.iconUrl || media.icon_url || '';
+            const backgroundUrl = media.backgroundUrl || media.background_url || '';
+            const iconKind = media.iconKind || media.icon_kind || this.detectMediaKind(iconUrl);
+            const backgroundKind = media.backgroundKind || media.background_kind || this.detectMediaKind(backgroundUrl);
             item.innerHTML = `
+                <div class="instance-media-preview ${backgroundUrl ? 'has-background' : ''}">
+                    ${this.renderMedia(backgroundUrl, backgroundKind, 'instance-background-preview')}
+                    <div class="instance-icon-preview">${this.renderMedia(iconUrl, iconKind, 'instance-icon-media') || '🎮'}</div>
+                </div>
                 <div class="instance-card-main">
                     <div class="instance-card-header">
                         <div>
@@ -314,10 +332,13 @@ class UIManager {
                     <div class="instance-modpack-summary">
                         ${modpackInfo ? `${this.escapeHtml(modpackInfo.version_id)} · MC ${this.escapeHtml(modpackInfo.minecraft_version)} · ${this.escapeHtml(modpackInfo.loader)} · ${modpackInfo.mod_count} mods` : 'Sube un archivo .mrpack para que esta instancia pueda generar una biblioteca jugable.'}
                     </div>
+                    <div class="instance-media-summary">Icono: ${iconUrl ? 'configurado' : 'sin configurar'} · Background: ${backgroundUrl ? 'configurado' : 'sin configurar'}</div>
                     <div class="instance-codes">${codes || '<span>No codes yet</span>'}</div>
                 </div>
                 <div class="instance-actions">
                     <button class="btn btn-primary" type="button" data-action="upload-instance-modpack" data-instance-id="${this.escapeHtml(instance.id)}">Subir .mrpack</button>
+                    <button class="btn btn-primary" type="button" data-action="upload-instance-media" data-slot="icon" data-instance-id="${this.escapeHtml(instance.id)}">Subir icono</button>
+                    <button class="btn btn-primary" type="button" data-action="upload-instance-media" data-slot="background" data-instance-id="${this.escapeHtml(instance.id)}">Subir background</button>
                     <button class="btn btn-success" type="button" data-action="generate-code" data-instance-id="${this.escapeHtml(instance.id)}" ${instance.modpack?.available ? '' : 'disabled'}>Generar código</button>
                     <button class="btn btn-success" type="button" data-action="add-instance-mod" data-instance-id="${this.escapeHtml(instance.id)}" ${instance.modpack?.available ? '' : 'disabled'}>Añadir .jar</button>
                 </div>
@@ -361,6 +382,22 @@ class UIManager {
         }
     }
 
+    detectMediaKind(url) {
+        const clean = String(url || '').split('?')[0].toLowerCase();
+        if (/\.(mp4|webm)$/.test(clean)) return 'video';
+        if (/\.(png|jpe?g|webp|gif)$/.test(clean)) return 'image';
+        return '';
+    }
+
+    renderMedia(url, kind, className) {
+        if (!url) return '';
+        const safeUrl = this.escapeHtml(url);
+        const mediaKind = kind || this.detectMediaKind(url);
+        if (mediaKind === 'video') {
+            return `<video class="${className}" src="${safeUrl}" muted loop autoplay playsinline></video>`;
+        }
+        return `<img class="${className}" src="${safeUrl}" alt="" loading="lazy">`;
+    }
     formatBytes(bytes) {
         if (!bytes) return '0 Bytes';
         const k = 1024;
@@ -422,6 +459,7 @@ class AdminPanel {
             if (button.dataset.action === 'copy-code') this.copyText(button.dataset.code);
             if (button.dataset.action === 'upload-instance-modpack') this.handleUploadInstanceModpack(button.dataset.instanceId);
             if (button.dataset.action === 'add-instance-mod') this.handleAddInstanceMod(button.dataset.instanceId);
+            if (button.dataset.action === 'upload-instance-media') this.handleUploadInstanceMedia(button.dataset.instanceId, button.dataset.slot);
         });
         this.ui.elements.refreshBtn?.addEventListener('click', () => {
             this.loadInfo();
@@ -508,8 +546,10 @@ class AdminPanel {
         }
         this.ui.setButtonLoading(this.ui.elements.createInstanceBtn, true, 'Creating...');
         try {
-            await this.api.createInstance(name);
+            await this.api.createInstance(name, iconUrl, backgroundUrl);
             input.value = '';
+            if (iconInput) iconInput.value = '';
+            if (backgroundInput) backgroundInput.value = '';
             this.ui.showAlert('Instance created', 'success');
             await this.loadInstances();
         } catch (error) {
@@ -520,6 +560,30 @@ class AdminPanel {
         }
     }
 
+    async handleUploadInstanceMedia(instanceId, slot) {
+        if (!instanceId || !slot) return;
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = API_CONFIG.allowedMediaExtensions.join(',');
+        input.onchange = async () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            const validation = FileValidator.validate(file, API_CONFIG.allowedMediaExtensions);
+            if (!validation.valid) {
+                this.ui.showAlert(validation.errors.join(', '), 'error');
+                return;
+            }
+            try {
+                await this.api.uploadInstanceMedia(instanceId, slot, file);
+                this.ui.showAlert(`${slot === 'icon' ? 'Icono' : 'Background'} actualizado`, 'success');
+                await this.loadInstances();
+            } catch (error) {
+                console.error('Upload instance media failed:', error);
+                this.ui.showAlert(error.message || 'Failed to upload instance media', 'error');
+            }
+        };
+        input.click();
+    }
     async handleGenerateCode(instanceId) {
         if (!instanceId) return;
         try {

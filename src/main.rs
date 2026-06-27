@@ -85,7 +85,8 @@ fn init_logging() -> Result<()> {
 fn build_app(config: Arc<Config>) -> Result<Router> {
     let public_routes = Router::new()
         .route("/api/health", get(handlers::health_check))
-        .route("/api/login", post(handlers::login));
+        .route("/api/login", post(handlers::login))
+        .route("/api/media/instances/{instance_id}/{slot}", get(handlers::serve_instance_media));
 
     let protected_launcher_routes = Router::new()
         .route("/api/info", get(handlers::info_modpack))
@@ -120,6 +121,10 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
         .route(
             "/api/admin/instances/{instance_id}/modpack",
             delete(handlers::delete_instance_modpack),
+        )
+        .route(
+            "/api/admin/instances/{instance_id}/media/{slot}",
+            post(handlers::upload_instance_media),
         )
         .route(
             "/api/admin/instances/{instance_id}/mods",
@@ -261,3 +266,4 @@ fn tracing_allowed_origins(config: &Config) {
 
     tracing::info!("  Allowed origins: {:?}", origins);
 }
+
