@@ -26,7 +26,10 @@ const JAR_EXTENSION: &str = ".jar";
 const OVERRIDE_MODS_DIR: &str = "overrides/mods";
 const MODRINTH_INDEX: &str = "modrinth.index.json";
 const INSTANCE_MEDIA_DIR: &str = "media";
-const INSTANCE_MEDIA_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm"];
+const INSTANCE_MEDIA_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "webp", "gif", "avif", "svg", "bmp", "ico", "tif", "tiff", "mp4", "webm",
+    "mov", "m4v", "ogv",
+];
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ModrinthIndex {
@@ -1321,8 +1324,8 @@ fn infer_media_kind(value: &str) -> Option<String> {
 
 fn media_kind_from_extension(extension: &str) -> Option<&'static str> {
     match extension.to_ascii_lowercase().as_str() {
-        "mp4" | "webm" => Some("video"),
-        "png" | "jpg" | "jpeg" | "webp" | "gif" => Some("image"),
+        "mp4" | "webm" | "mov" | "m4v" | "ogv" => Some("video"),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "avif" | "svg" | "bmp" | "ico" | "tif" | "tiff" => Some("image"),
         _ => None,
     }
 }
@@ -1333,8 +1336,16 @@ fn media_content_type(file_path: &Path) -> &'static str {
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gif" => "image/gif",
+        "avif" => "image/avif",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "tif" | "tiff" => "image/tiff",
         "mp4" => "video/mp4",
         "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "m4v" => "video/x-m4v",
+        "ogv" => "video/ogg",
         _ => "application/octet-stream",
     }
 }
@@ -1353,14 +1364,20 @@ async fn read_media_upload(mut multipart: Multipart) -> ResponseResult<(String, 
         .await
         .map_err(|why| AppError::MultipartError(why.to_string()))?
     {
+        let content_type = field.content_type().map(str::to_string);
         let file_name = field.file_name().map(str::to_string).unwrap_or_else(|| "media".to_string());
         let extension = file_name
             .rsplit('.')
             .next()
             .map(|value| value.to_ascii_lowercase())
+            .filter(|value| value.chars().all(|character| character.is_ascii_alphanumeric()) && value.len() <= 10)
             .ok_or_else(|| AppError::BadRequest("Media file must have an extension".to_string()))?;
-        if !INSTANCE_MEDIA_EXTENSIONS.contains(&extension.as_str()) {
-            return Err(AppError::BadRequest("Allowed media types: png, jpg, jpeg, webp, gif, mp4, webm".to_string()));
+        let is_allowed_extension = INSTANCE_MEDIA_EXTENSIONS.contains(&extension.as_str());
+        let is_allowed_media_type = content_type
+            .as_deref()
+            .is_some_and(|value| value.starts_with("image/") || value.starts_with("video/"));
+        if !is_allowed_extension && !is_allowed_media_type {
+            return Err(AppError::BadRequest("Allowed media types: images and videos".to_string()));
         }
         let data = field
             .bytes()
@@ -1906,10 +1923,3 @@ mod tests {
         assert!(!constant_time_compare(b"a", b""));
     }
 }
-
-
-
-
-
-
-

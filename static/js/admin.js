@@ -11,7 +11,8 @@ const API_CONFIG = {
     maxFileSize: 500 * 1024 * 1024,
     allowedExtensions: ['.mrpack'],
     allowedModExtensions: ['.jar'],
-    allowedMediaExtensions: ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.mp4', '.webm'],
+    allowedMediaExtensions: ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.svg', '.bmp', '.ico', '.tif', '.tiff', '.mp4', '.webm', '.mov', '.m4v', '.ogv'],
+    allowedMediaMimePrefixes: ['image/', 'video/'],
     uploadTimeout: 600000,
     loginUrl: '/login.html'
 };
@@ -227,6 +228,8 @@ class UIManager {
             modList: document.getElementById('modList'),
             instanceNameInput: document.getElementById('instanceNameInput'),
             createInstanceBtn: document.getElementById('createInstanceBtn'),
+            instanceIconUrlInput: document.getElementById('instanceIconUrlInput'),
+            instanceBackgroundUrlInput: document.getElementById('instanceBackgroundUrlInput'),
             instancesList: document.getElementById('instancesList')
         };
     }
@@ -384,8 +387,8 @@ class UIManager {
 
     detectMediaKind(url) {
         const clean = String(url || '').split('?')[0].toLowerCase();
-        if (/\.(mp4|webm)$/.test(clean)) return 'video';
-        if (/\.(png|jpe?g|webp|gif)$/.test(clean)) return 'image';
+        if (/\.(mp4|webm|mov|m4v|ogv)$/.test(clean)) return 'video';
+        if (/\.(png|jpe?g|webp|gif|avif|svg|bmp|ico|tiff?)$/.test(clean)) return 'image';
         return '';
     }
 
@@ -418,7 +421,16 @@ class FileValidator {
         const errors = [];
         if (!file) return { valid: false, errors: ['No file selected'] };
         const extension = `.${file.name.split('.').pop().toLowerCase()}`;
-        if (!allowedExtensions.includes(extension)) errors.push(`Invalid file type. Only ${allowedExtensions.join(', ')} files are allowed`);
+        const isMediaValidation = allowedExtensions === API_CONFIG.allowedMediaExtensions;
+        const hasAllowedExtension = allowedExtensions.includes(extension);
+        const hasAllowedMime = isMediaValidation
+            && API_CONFIG.allowedMediaMimePrefixes.some((prefix) => file.type?.startsWith(prefix));
+        if (!hasAllowedExtension && !hasAllowedMime) {
+            const message = isMediaValidation
+                ? 'Invalid file type. Images and videos are allowed'
+                : `Invalid file type. Only ${allowedExtensions.join(', ')} files are allowed`;
+            errors.push(message);
+        }
         if (file.size > API_CONFIG.maxFileSize) errors.push(`File size exceeds maximum allowed size of ${API_CONFIG.maxFileSize / (1024 * 1024)} MB`);
         if (file.size === 0) errors.push('File is empty');
         return { valid: errors.length === 0, errors };
@@ -538,7 +550,11 @@ class AdminPanel {
 
     async handleCreateInstance() {
         const input = this.ui.elements.instanceNameInput;
+        const iconInput = this.ui.elements.instanceIconUrlInput;
+        const backgroundInput = this.ui.elements.instanceBackgroundUrlInput;
         const name = input?.value?.trim();
+        const iconUrl = iconInput?.value?.trim() || null;
+        const backgroundUrl = backgroundInput?.value?.trim() || null;
         if (!name) {
             this.ui.showAlert('Instance name is required', 'error');
             input?.focus();
@@ -564,7 +580,7 @@ class AdminPanel {
         if (!instanceId || !slot) return;
         const input = document.createElement('input');
         input.type = 'file';
-        input.accept = API_CONFIG.allowedMediaExtensions.join(',');
+        input.accept = 'image/*,video/*';
         input.onchange = async () => {
             const file = input.files?.[0];
             if (!file) return;
