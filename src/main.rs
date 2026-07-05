@@ -92,6 +92,9 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
         .route("/api/info", get(handlers::info_modpack))
         .route("/api/download", get(handlers::download_modpack))
         .route("/api/instances/redeem", post(handlers::redeem_instance_code))
+        .route("/api/social/snapshot", get(handlers::social_snapshot))
+        .route("/api/social/presence", post(handlers::update_social_presence))
+        .route("/api/integrity/report", post(handlers::report_integrity))
         .route("/api/instances/{instance_id}/info", get(handlers::info_instance_modpack))
         .route(
             "/api/instances/{instance_id}/download",
@@ -266,4 +269,5 @@ fn tracing_allowed_origins(config: &Config) {
 
     tracing::info!("  Allowed origins: {:?}", origins);
 }
+
 

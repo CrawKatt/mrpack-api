@@ -5,7 +5,7 @@ use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     Json,
     body::Body,
-    extract::{Multipart, Path as AxumPath, State},
+    extract::{Multipart, Path as AxumPath, Query, State},
     http::{StatusCode, header},
     response::Response,
 };
@@ -1812,6 +1812,309 @@ fn rewrite_mrpack_archive_inner<R: Read + std::io::Seek>(
     Ok(())
 }
 
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SocialStore {
+    profiles: HashMap<String, SocialProfile>,
+    presence: HashMap<String, PresenceEntry>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SocialProfile {
+    id: String,
+    username: String,
+    avatar_url: Option<String>,
+    skin_url: Option<String>,
+    bio: Option<String>,
+    rank: String,
+    country: Option<String>,
+    favorite_instance: Option<String>,
+    hours_played: f64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FriendEntry {
+    id: String,
+    username: String,
+    rank: String,
+    status: String,
+    playing: Option<String>,
+    last_seen: String,
+    joinable: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FriendRequest {
+    id: String,
+    from_username: String,
+    created_at: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ChatPreview {
+    id: String,
+    title: String,
+    kind: String,
+    last_message: String,
+    unread: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ActivityEntry {
+    id: String,
+    title: String,
+    body: String,
+    created_at: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ClanSummary {
+    id: String,
+    name: String,
+    tag: String,
+    logo_url: Option<String>,
+    role: String,
+    members: u32,
+    wins: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InviteLink {
+    code: String,
+    target: String,
+    uses: u32,
+    max_uses: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PresenceEntry {
+    user_id: String,
+    username: String,
+    status: String,
+    instance: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SocialSnapshot {
+    profile: SocialProfile,
+    friends: Vec<FriendEntry>,
+    requests: Vec<FriendRequest>,
+    chats: Vec<ChatPreview>,
+    feed: Vec<ActivityEntry>,
+    clans: Vec<ClanSummary>,
+    invites: Vec<InviteLink>,
+    presence: Vec<PresenceEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SocialSnapshotQuery {
+    user_id: Option<String>,
+    username: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceUpdateRequest {
+    user_id: String,
+    username: String,
+    status: String,
+    instance: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrityReportRequest {
+    user_id: String,
+    username: String,
+    instance_id: Option<String>,
+    instance_name: String,
+    manifest_sha1: String,
+    passed: bool,
+    issues: Vec<serde_json::Value>,
+}
+
+pub async fn social_snapshot(
+    State(config): State<Arc<Config>>,
+    Query(query): Query<SocialSnapshotQuery>,
+) -> ResponseResult<Json<SocialSnapshot>> {
+    let _guard = social_store_lock().lock().await;
+    let mut store = load_social_store(&config).await?;
+    let user_id = clean_social_id(query.user_id.as_deref().unwrap_or("guest"));
+    let username = query
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Invitado")
+        .to_string();
+    let now = unix_timestamp_string();
+    let profile = store.profiles.entry(user_id.clone()).or_insert_with(|| SocialProfile {
+        id: user_id.clone(),
+        username: username.clone(),
+        avatar_url: None,
+        skin_url: None,
+        bio: Some("Perfil publico de HexaCore.".to_string()),
+        rank: "Miembro".to_string(),
+        country: None,
+        favorite_instance: Some("Carbonz Instance".to_string()),
+        hours_played: 0.0,
+    }).clone();
+    store.presence.entry(user_id.clone()).or_insert(PresenceEntry {
+        user_id: user_id.clone(),
+        username: username.clone(),
+        status: "online".to_string(),
+        instance: None,
+    });
+    save_social_store(&config, &store).await?;
+
+    let mut presence: Vec<_> = store.presence.values().cloned().collect();
+    presence.sort_by(|left, right| left.username.cmp(&right.username));
+    Ok(Json(SocialSnapshot {
+        profile,
+        friends: demo_friends(&now),
+        requests: vec![FriendRequest { id: "req-welcome".to_string(), from_username: "HexaCore Staff".to_string(), created_at: now.clone() }],
+        chats: vec![
+            ChatPreview { id: "official".to_string(), title: "Canal oficial".to_string(), kind: "channel".to_string(), last_message: "Noticias y avisos del servidor.".to_string(), unread: 1 },
+            ChatPreview { id: "staff-news".to_string(), title: "Actualizaciones".to_string(), kind: "channel".to_string(), last_message: "El launcher social ya esta activo.".to_string(), unread: 0 },
+        ],
+        feed: vec![
+            ActivityEntry { id: "feed-social".to_string(), title: "Plataforma social".to_string(), body: "Perfiles, amigos, clanes y presencia conectados al launcher.".to_string(), created_at: now.clone() },
+            ActivityEntry { id: "feed-integrity".to_string(), title: "Integridad activa".to_string(), body: "El launcher reporta verificaciones antes de iniciar Minecraft.".to_string(), created_at: now.clone() },
+        ],
+        clans: vec![ClanSummary { id: "hexacore".to_string(), name: "HexaCore".to_string(), tag: "HEX".to_string(), logo_url: None, role: "Miembro".to_string(), members: 1 + presence.len() as u32, wins: 0 }],
+        invites: vec![InviteLink { code: "HEX-PLAY".to_string(), target: "Carbonz Instance".to_string(), uses: 0, max_uses: Some(50) }],
+        presence,
+    }))
+}
+
+pub async fn update_social_presence(
+    State(config): State<Arc<Config>>,
+    Json(payload): Json<PresenceUpdateRequest>,
+) -> ResponseResult<Json<ApiResponse>> {
+    let _guard = social_store_lock().lock().await;
+    let mut store = load_social_store(&config).await?;
+    let user_id = clean_social_id(&payload.user_id);
+    let instance = payload.instance.filter(|value| !value.trim().is_empty());
+    store.presence.insert(user_id.clone(), PresenceEntry {
+        user_id: user_id.clone(),
+        username: clean_username(&payload.username),
+        status: normalize_presence_status(&payload.status),
+        instance: instance.clone(),
+    });
+    store.profiles.entry(user_id.clone()).or_insert_with(|| SocialProfile {
+        id: user_id,
+        username: clean_username(&payload.username),
+        avatar_url: None,
+        skin_url: None,
+        bio: Some("Perfil publico de HexaCore.".to_string()),
+        rank: "Miembro".to_string(),
+        country: None,
+        favorite_instance: instance,
+        hours_played: 0.0,
+    });
+    save_social_store(&config, &store).await?;
+    Ok(Json(ApiResponse::success("Presence updated")))
+}
+
+pub async fn report_integrity(
+    State(config): State<Arc<Config>>,
+    Json(payload): Json<IntegrityReportRequest>,
+) -> ResponseResult<Json<ApiResponse>> {
+    let path = get_integrity_reports_path(&config);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await.map_err(AppError::FileIo)?;
+    }
+    let line = serde_json::to_string(&payload)
+        .map_err(|why| AppError::Internal(format!("Failed to serialize integrity report: {why}")))?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await
+        .map_err(AppError::FileIo)?;
+    file.write_all(line.as_bytes()).await.map_err(AppError::FileIo)?;
+    file.write_all(b"\n").await.map_err(AppError::FileIo)?;
+    Ok(Json(ApiResponse::success("Integrity report stored")))
+}
+
+fn demo_friends(now: &str) -> Vec<FriendEntry> {
+    vec![
+        FriendEntry { id: "alex".to_string(), username: "Alex".to_string(), rank: "Veterano".to_string(), status: "inGame".to_string(), playing: Some("Carbonz Instance".to_string()), last_seen: now.to_string(), joinable: true },
+        FriendEntry { id: "nora".to_string(), username: "Nora".to_string(), rank: "Builder".to_string(), status: "online".to_string(), playing: None, last_seen: now.to_string(), joinable: false },
+    ]
+}
+
+async fn load_social_store(config: &Config) -> ResponseResult<SocialStore> {
+    let path = get_social_store_path(config);
+    if !path.exists() {
+        return Ok(SocialStore::default());
+    }
+    let content = fs::read_to_string(path).await.map_err(AppError::FileIo)?;
+    Ok(serde_json::from_str(&content).unwrap_or_default())
+}
+
+async fn save_social_store(config: &Config, store: &SocialStore) -> ResponseResult<()> {
+    let path = get_social_store_path(config);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await.map_err(AppError::FileIo)?;
+    }
+    let content = serde_json::to_string_pretty(store)
+        .map_err(|why| AppError::Internal(format!("Failed to serialize social store: {why}")))?;
+    fs::write(path, content).await.map_err(AppError::FileIo)?;
+    Ok(())
+}
+
+fn social_store_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn get_social_store_path(config: &Config) -> PathBuf {
+    config.storage.directory.join("social.json")
+}
+
+fn get_integrity_reports_path(config: &Config) -> PathBuf {
+    config.storage.directory.join("integrity-reports.jsonl")
+}
+
+fn clean_username(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() { "Invitado".to_string() } else { trimmed.to_string() }
+}
+
+fn clean_social_id(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ':'))
+        .take(96)
+        .collect();
+    cleaned.if_empty("guest")
+}
+
+fn normalize_presence_status(value: &str) -> String {
+    match value {
+        "offline" | "online" | "inGame" | "queued" | "downloading" => value.to_string(),
+        _ => "online".to_string(),
+    }
+}
+
+fn unix_timestamp_string() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1923,3 +2226,8 @@ mod tests {
         assert!(!constant_time_compare(b"a", b""));
     }
 }
+
+
+
+
+
