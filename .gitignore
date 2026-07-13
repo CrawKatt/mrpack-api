@@ -43,3 +43,8 @@ test_*.mrpack
 /target
 .shuttle*
 Secrets*.toml
+
+# Frontend (Vite + React)
+admin-frontend/node_modules
+admin-frontend/dist
+static/admin/
