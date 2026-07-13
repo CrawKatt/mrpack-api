@@ -256,6 +256,32 @@ EOF
         print_success "Storage directory created: $STORAGE_DIR"
     fi
 
+    # Build the admin frontend (Vite + React) if Node is available
+    if command_exists npm; then
+        print_header "Step 4b: Building Admin Frontend"
+        if [ -d admin-frontend ]; then
+            if [ ! -d admin-frontend/node_modules ]; then
+                echo "Installing frontend dependencies..."
+                if (cd admin-frontend && npm install --silent); then
+                    print_success "Frontend dependencies installed"
+                else
+                    print_warning "npm install failed; admin SPA will not be rebuilt"
+                fi
+            fi
+            echo "Building admin SPA into static/admin/..."
+            if (cd admin-frontend && npm run build --silent); then
+                print_success "Admin SPA built into static/admin/"
+            else
+                print_warning "Frontend build failed; admin SPA will not be updated"
+            fi
+        else
+            print_info "admin-frontend/ not found; skipping frontend build"
+        fi
+    else
+        print_warning "npm not installed; skipping admin frontend build"
+        print_info "Install Node.js to build the React admin panel"
+    fi
+
     echo ""
 
     # Step 5: Verify configuration
