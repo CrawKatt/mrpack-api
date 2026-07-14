@@ -123,7 +123,7 @@ impl Config {
                 .unwrap_or_else(|_| "storage".to_string())
                 .into(),
             max_file_size_mb: std::env::var("MAX_FILE_SIZE_MB")
-                .unwrap_or_else(|_| "500".to_string())
+                .unwrap_or_else(|_| "2048".to_string())
                 .parse()
                 .context("MAX_FILE_SIZE_MB must be a valid number")?,
         };
