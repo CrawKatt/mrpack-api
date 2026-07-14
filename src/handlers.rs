@@ -3,11 +3,11 @@ use crate::error::{AppError, ResponseResult};
 use crate::utils::constant_time_compare;
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
-    Json,
+    Extension, Json,
     body::Body,
     extract::{Multipart, Path as AxumPath, Query, State},
     http::{StatusCode, header},
-    response::Response,
+    response::{Response, sse::{Event, Sse}},
 };
 use bon::Builder;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::broadcast;
 use tokio_util::io::ReaderStream;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
@@ -2369,6 +2370,13 @@ pub async fn check_maintenance(
 
     let is_premium = payload.account_type.eq_ignore_ascii_case("premium");
 
+    if store.whitelist.iter().any(|n| n == &nick) {
+        return Ok(Json(MaintenanceCheckResponse {
+            allowed: true,
+            reason: None,
+        }));
+    }
+
     if store.premium_only && !is_premium {
         return Ok(Json(MaintenanceCheckResponse {
             allowed: false,
@@ -2376,7 +2384,7 @@ pub async fn check_maintenance(
         }));
     }
 
-    if store.whitelist.iter().any(|n| n == &nick) {
+    if is_premium {
         return Ok(Json(MaintenanceCheckResponse {
             allowed: true,
             reason: None,
@@ -2393,11 +2401,13 @@ pub async fn check_maintenance(
 
 pub async fn toggle_maintenance(
     State(config): State<Arc<Config>>,
+    Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
 ) -> ResponseResult<Json<MaintenanceStatusPublic>> {
     let _guard = maintenance_store_lock().lock().await;
     let mut store = load_maintenance(&config).await?;
     store.enabled = !store.enabled;
     save_maintenance(&config, &store).await?;
+    let _ = tx.send(store.clone());
     Ok(Json(MaintenanceStatusPublic::from(&store)))
 }
 
@@ -2410,6 +2420,7 @@ pub struct UpdateMaintenanceConfigRequest {
 
 pub async fn update_maintenance_config(
     State(config): State<Arc<Config>>,
+    Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
     Json(req): Json<UpdateMaintenanceConfigRequest>,
 ) -> ResponseResult<Json<MaintenanceStatusPublic>> {
     if req.message.trim().is_empty() {
@@ -2420,6 +2431,7 @@ pub async fn update_maintenance_config(
     store.premium_only = req.premium_only;
     store.message = req.message;
     save_maintenance(&config, &store).await?;
+    let _ = tx.send(store.clone());
     Ok(Json(MaintenanceStatusPublic::from(&store)))
 }
 
@@ -2433,6 +2445,7 @@ pub async fn list_whitelist(
 pub async fn add_whitelist_entry(
     State(config): State<Arc<Config>>,
     AxumPath(nick): AxumPath<String>,
+    Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
 ) -> ResponseResult<Json<MaintenanceStatusPublic>> {
     let n = normalize_nick(&nick).ok_or_else(|| {
         AppError::Validation("invalid nick (3-16 chars, [a-z0-9_])".to_string())
@@ -2442,6 +2455,7 @@ pub async fn add_whitelist_entry(
     if !store.whitelist.contains(&n) {
         store.whitelist.push(n);
         save_maintenance(&config, &store).await?;
+        let _ = tx.send(store.clone());
     }
     Ok(Json(MaintenanceStatusPublic::from(&store)))
 }
@@ -2449,6 +2463,7 @@ pub async fn add_whitelist_entry(
 pub async fn remove_whitelist_entry(
     State(config): State<Arc<Config>>,
     AxumPath(nick): AxumPath<String>,
+    Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
 ) -> ResponseResult<Json<MaintenanceStatusPublic>> {
     let n = normalize_nick(&nick).ok_or_else(|| {
         AppError::Validation("invalid nick (3-16 chars, [a-z0-9_])".to_string())
@@ -2459,8 +2474,43 @@ pub async fn remove_whitelist_entry(
     store.whitelist.retain(|x| x != &n);
     if store.whitelist.len() != before {
         save_maintenance(&config, &store).await?;
+        let _ = tx.send(store.clone());
     }
     Ok(Json(MaintenanceStatusPublic::from(&store)))
+}
+
+// ----- SSE live updates -----
+
+pub async fn maintenance_stream(
+    State(config): State<Arc<Config>>,
+    Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
+) -> Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, std::convert::Infallible>>> {
+    use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+
+    let initial = load_maintenance(&config).await.unwrap_or_default();
+    let initial_public = MaintenanceStatusPublic::from(&initial);
+
+    let rx = tx.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|result| {
+        match result {
+            Ok(config) => {
+                let public = MaintenanceStatusPublic::from(&config);
+                let payload = serde_json::to_string(&public).unwrap_or_default();
+                Some(Ok(Event::default().data(payload)))
+            }
+            Err(_) => None,
+        }
+    });
+
+    let initial_payload = serde_json::to_string(&initial_public).unwrap_or_default();
+    let initial_stream = tokio_stream::once(Ok(Event::default().data(initial_payload)));
+    let combined = initial_stream.chain(stream);
+
+    Sse::new(combined).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(30))
+            .text("keep-alive"),
+    )
 }
 
 

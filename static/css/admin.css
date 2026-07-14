@@ -865,3 +865,202 @@ h2 {
         grid-template-columns: 1fr;
     }
 }
+
+/* ----------------------------------------------------------------------------
+ * Maintenance Mode Section
+ * ---------------------------------------------------------------------------- */
+.section-subtitle {
+    color: var(--color-text-light);
+    font-size: 0.9em;
+    margin: -8px 0 var(--spacing-md);
+    line-height: 1.5;
+}
+
+.maintenance-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+    flex-wrap: wrap;
+}
+
+.maintenance-column {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.maintenance-label {
+    font-weight: 600;
+    color: var(--color-gray-600);
+    flex-shrink: 0;
+}
+
+.maintenance-divider {
+    border: none;
+    border-top: 1px solid var(--color-border);
+    margin: var(--spacing-md) 0;
+}
+
+.maintenance-h3 {
+    color: var(--color-gray-600);
+    font-size: 1.05em;
+    margin: var(--spacing-md) 0 var(--spacing-sm);
+    font-weight: 600;
+}
+
+/* Toggle pill */
+.toggle-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 18px;
+    border: 2px solid var(--color-border);
+    border-radius: 999px;
+    background: var(--color-bg);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.95em;
+    transition: all var(--transition-base);
+    user-select: none;
+    color: var(--color-gray-700);
+}
+
+.toggle-pill:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+}
+
+.toggle-pill-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--color-gray-400);
+    transition: background var(--transition-base);
+    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.04);
+}
+
+.toggle-pill.on {
+    border-color: var(--color-success);
+    background: var(--color-success-light);
+    color: #155724;
+}
+
+.toggle-pill.on .toggle-pill-dot {
+    background: var(--color-success);
+    box-shadow: 0 0 0 3px rgba(40, 167, 69, 0.2);
+}
+
+.toggle-pill.off {
+    border-color: var(--color-gray-300);
+    background: var(--color-bg);
+    color: var(--color-gray-600);
+}
+
+.toggle-pill.off .toggle-pill-dot {
+    background: var(--color-gray-400);
+}
+
+.maintenance-checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--color-gray-700);
+    font-size: 0.95em;
+    cursor: pointer;
+    flex: 1;
+    min-width: 0;
+}
+
+.maintenance-checkbox input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--color-primary);
+    cursor: pointer;
+}
+
+#maintenanceMessage {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font-family: inherit;
+    font-size: 0.95em;
+    resize: vertical;
+    min-height: 72px;
+    background: var(--color-bg);
+    color: var(--color-text);
+}
+
+#maintenanceMessage:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+}
+
+#adminNickInput,
+#whitelistAddInput {
+    flex: 1;
+    min-width: 180px;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font-size: 0.95em;
+    background: var(--color-bg);
+    color: var(--color-text);
+}
+
+#adminNickInput:focus,
+#whitelistAddInput:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+}
+
+.btn-compact {
+    width: auto;
+    padding: 10px 18px;
+    font-size: 0.9em;
+}
+
+.btn-tiny {
+    width: auto;
+    padding: 5px 10px;
+    font-size: 0.78em;
+    border-radius: var(--radius-sm);
+}
+
+.whitelist-list {
+    display: grid;
+    gap: 6px;
+    margin-top: var(--spacing-xs);
+}
+
+.whitelist-item {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: 8px 12px;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+}
+
+.whitelist-item code {
+    flex: 1;
+    font-family: 'Courier New', monospace;
+    font-size: 0.95em;
+    color: var(--color-gray-700);
+    word-break: break-all;
+}
+
+.whitelist-empty {
+    color: var(--color-text-light);
+    font-size: 0.9em;
+    padding: var(--spacing-sm);
+    background: var(--color-bg);
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius-md);
+    text-align: center;
+    margin: 0;
+}

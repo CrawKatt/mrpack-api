@@ -6,7 +6,11 @@ const API_CONFIG = {
         upload: '/api/upload',
         delete: '/api/delete',
         mods: '/api/mods',
-        instances: '/api/admin/instances'
+        instances: '/api/admin/instances',
+        maintenanceStatus: '/api/maintenance/status',
+        maintenanceToggle: '/api/admin/maintenance/toggle',
+        maintenanceConfig: '/api/admin/maintenance/config',
+        maintenanceWhitelist: '/api/admin/maintenance/whitelist',
     },
     maxFileSize: 500 * 1024 * 1024,
     allowedExtensions: ['.mrpack'],
@@ -14,7 +18,8 @@ const API_CONFIG = {
     allowedMediaExtensions: ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.svg', '.bmp', '.ico', '.tif', '.tiff', '.mp4', '.webm', '.mov', '.m4v', '.ogv'],
     allowedMediaMimePrefixes: ['image/', 'video/'],
     uploadTimeout: 600000,
-    loginUrl: '/login.html'
+    loginUrl: '/login.html',
+    adminNickStorageKey: 'mrpack_admin_minecraft_nick',
 };
 
 class AuthManager {
@@ -449,6 +454,7 @@ class AdminPanel {
         this.authManager = new AuthManager();
         this.api = new ApiClient(this.authManager);
         this.ui = new UIManager();
+        this.maintenance = new MaintenanceManager(this.authManager);
         this.selectedFile = null;
         this.selectedModFile = null;
         this.modpackAvailable = false;
@@ -462,8 +468,11 @@ class AdminPanel {
         }
         this.setupEventListeners();
         this.setupDragAndDrop();
+        this.maintenance.setupListeners();
         this.loadInfo();
         this.loadInstances();
+        this.maintenance.loadStatus();
+        this.maintenance.loadWhitelist();
     }
 
     setupEventListeners() {
@@ -484,6 +493,8 @@ class AdminPanel {
         this.ui.elements.refreshBtn?.addEventListener('click', () => {
             this.loadInfo();
             this.loadInstances();
+            this.maintenance.loadStatus();
+            this.maintenance.loadWhitelist();
         });
         this.ui.elements.deleteBtn?.addEventListener('click', () => this.handleDelete());
         this.ui.elements.downloadBtn?.addEventListener('click', () => this.handleDownload());
@@ -798,6 +809,220 @@ class AdminPanel {
         } finally {
             this.ui.setButtonLoading(this.ui.elements.deleteBtn, false, '🗑️ Delete');
         }
+    }
+}
+
+class MaintenanceManager {
+    constructor(authManager) {
+        this.authManager = authManager;
+        this.api = new ApiClient(authManager);
+        this.status = { enabled: false, premiumOnly: false, message: '' };
+        this.whitelist = [];
+        this.elements = {
+            toggleBtn: document.getElementById('maintenanceToggleBtn'),
+            toggleText: document.querySelector('#maintenanceToggleBtn .toggle-pill-text'),
+            premiumOnly: document.getElementById('maintenancePremiumOnly'),
+            message: document.getElementById('maintenanceMessage'),
+            saveConfigBtn: document.getElementById('maintenanceSaveConfigBtn'),
+            adminNickInput: document.getElementById('adminNickInput'),
+            whitelistAddInput: document.getElementById('whitelistAddInput'),
+            whitelistAddBtn: document.getElementById('whitelistAddBtn'),
+            whitelistList: document.getElementById('whitelistList'),
+        };
+        this.adminNick = sessionStorage.getItem(API_CONFIG.adminNickStorageKey) || '';
+        if (this.elements.adminNickInput) this.elements.adminNickInput.value = this.adminNick;
+    }
+
+    async loadStatus() {
+        try {
+            const response = await fetch(API_CONFIG.endpoints.maintenanceStatus, {
+                headers: this.authManager.getAuthHeader(),
+            });
+            if (response.status === 401) { this.authManager.logout(); return; }
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            this.status = await response.json();
+            this.renderStatus();
+        } catch (error) {
+            console.error('Failed to load maintenance status:', error);
+            this.showAlert(`No se pudo cargar el estado: ${error.message}`, 'error');
+        }
+    }
+
+    async loadWhitelist() {
+        try {
+            const response = await fetch(API_CONFIG.endpoints.maintenanceWhitelist, {
+                headers: this.authManager.getAuthHeader(),
+            });
+            if (response.status === 401) { this.authManager.logout(); return; }
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            this.whitelist = await response.json();
+            this.renderWhitelist();
+        } catch (error) {
+            console.error('Failed to load whitelist:', error);
+            this.showAlert(`No se pudo cargar la whitelist: ${error.message}`, 'error');
+        }
+    }
+
+    renderStatus() {
+        if (!this.elements.toggleBtn) return;
+        const on = this.status.enabled;
+        this.elements.toggleBtn.classList.toggle('on', on);
+        this.elements.toggleBtn.classList.toggle('off', !on);
+        if (this.elements.toggleText) {
+            this.elements.toggleText.textContent = on ? 'Activado' : 'Desactivado';
+        }
+        if (this.elements.premiumOnly) this.elements.premiumOnly.checked = !!this.status.premiumOnly;
+        if (this.elements.message) this.elements.message.value = this.status.message || '';
+    }
+
+    renderWhitelist() {
+        if (!this.elements.whitelistList) return;
+        if (!this.whitelist.length) {
+            this.elements.whitelistList.innerHTML = '<p class="whitelist-empty">La whitelist está vacía.</p>';
+            return;
+        }
+        this.elements.whitelistList.innerHTML = this.whitelist
+            .map((nick) => `
+                <div class="whitelist-item">
+                    <code>${this.escapeHtml(nick)}</code>
+                    <button class="btn btn-danger btn-tiny" type="button" data-action="remove-whitelist" data-nick="${this.escapeHtml(nick)}">Quitar</button>
+                </div>
+            `)
+            .join('');
+    }
+
+    showAlert(message, type = 'info') {
+        const container = document.getElementById('alertContainer');
+        if (!container) return;
+        const alert = document.createElement('div');
+        alert.className = `alert alert-${type} show`;
+        const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
+        alert.innerHTML = `<span>${icon}</span><span>${this.escapeHtml(message)}</span>`;
+        container.appendChild(alert);
+        setTimeout(() => {
+            alert.classList.remove('show');
+            setTimeout(() => alert.remove(), 300);
+        }, 5000);
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = String(text ?? '');
+        return div.innerHTML;
+    }
+
+    async handleToggle() {
+        const wasEnabled = this.status.enabled;
+        try {
+            this.persistAdminNick();
+            if (!wasEnabled) {
+                const nick = this.elements.adminNickInput?.value?.trim();
+                if (nick) {
+                    await this.addWhitelist(nick, /*silent*/ true);
+                }
+            }
+            await this.post(API_CONFIG.endpoints.maintenanceToggle, null);
+            await this.loadStatus();
+            this.showAlert(wasEnabled ? 'Mantenimiento desactivado' : 'Mantenimiento activado', 'success');
+        } catch (error) {
+            this.showAlert(error.message || 'Error al cambiar el estado', 'error');
+        }
+    }
+
+    async handleSaveConfig() {
+        const premiumOnly = !!this.elements.premiumOnly?.checked;
+        const message = this.elements.message?.value?.trim();
+        if (!message) {
+            this.showAlert('El mensaje no puede estar vacío', 'error');
+            return;
+        }
+        try {
+            await this.post(API_CONFIG.endpoints.maintenanceConfig, { premiumOnly, message });
+            await this.loadStatus();
+            this.showAlert('Configuración guardada', 'success');
+        } catch (error) {
+            this.showAlert(error.message || 'Error al guardar', 'error');
+        }
+    }
+
+    async handleAddWhitelist() {
+        const nick = this.elements.whitelistAddInput?.value?.trim();
+        if (!nick) return;
+        try {
+            await this.addWhitelist(nick);
+            if (this.elements.whitelistAddInput) this.elements.whitelistAddInput.value = '';
+        } catch (error) {
+            this.showAlert(error.message || 'Error al añadir', 'error');
+        }
+    }
+
+    async addWhitelist(nick, silent = false) {
+        if (!/^[a-zA-Z0-9_]{3,16}$/.test(nick)) {
+            throw new Error('Nick inválido (3-16 chars, [a-zA-Z0-9_])');
+        }
+        await this.post(`${API_CONFIG.endpoints.maintenanceWhitelist}/${encodeURIComponent(nick)}`, null);
+        await this.loadWhitelist();
+        if (!silent) this.showAlert(`"${nick}" añadido a la whitelist`, 'success');
+    }
+
+    async handleRemoveWhitelist(nick) {
+        if (!confirm(`¿Quitar "${nick}" de la whitelist?`)) return;
+        try {
+            const response = await fetch(`${API_CONFIG.endpoints.maintenanceWhitelist}/${encodeURIComponent(nick)}`, {
+                method: 'DELETE',
+                headers: this.authManager.getAuthHeader(),
+            });
+            if (response.status === 401) { this.authManager.logout(); return; }
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${response.status}`);
+            }
+            await this.loadWhitelist();
+            this.showAlert(`"${nick}" quitado`, 'success');
+        } catch (error) {
+            this.showAlert(error.message || 'Error al quitar', 'error');
+        }
+    }
+
+    persistAdminNick() {
+        const value = this.elements.adminNickInput?.value?.trim() || '';
+        if (value) {
+            sessionStorage.setItem(API_CONFIG.adminNickStorageKey, value);
+        } else {
+            sessionStorage.removeItem(API_CONFIG.adminNickStorageKey);
+        }
+    }
+
+    async post(endpoint, body) {
+        const options = {
+            method: 'POST',
+            headers: {
+                ...(body ? { 'Content-Type': 'application/json' } : {}),
+                ...this.authManager.getAuthHeader(),
+            },
+        };
+        if (body) options.body = JSON.stringify(body);
+        const response = await fetch(endpoint, options);
+        if (response.status === 401) { this.authManager.logout(); throw new Error('Unauthorized'); }
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${response.status}`);
+        }
+        return response.json().catch(() => null);
+    }
+
+    setupListeners() {
+        this.elements.toggleBtn?.addEventListener('click', () => this.handleToggle());
+        this.elements.saveConfigBtn?.addEventListener('click', () => this.handleSaveConfig());
+        this.elements.whitelistAddBtn?.addEventListener('click', () => this.handleAddWhitelist());
+        this.elements.whitelistAddInput?.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') this.handleAddWhitelist();
+        });
+        this.elements.adminNickInput?.addEventListener('change', () => this.persistAdminNick());
+        this.elements.whitelistList?.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-action="remove-whitelist"]');
+            if (button) this.handleRemoveWhitelist(button.dataset.nick);
+        });
     }
 }
 
