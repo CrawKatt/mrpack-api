@@ -23,6 +23,7 @@ pub struct AuthConfig {
     pub username: String,
     pub password_hash: String,
     pub download_token_hash: Option<String>,
+    pub maintenance_token_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -114,6 +115,7 @@ impl Config {
             username,
             password_hash,
             download_token_hash: read_optional_hash("DOWNLOAD_TOKEN_HASH")?,
+            maintenance_token_hash: read_optional_hash("MAINTENANCE_TOKEN_HASH")?,
         };
 
         let storage = StorageConfig {
@@ -249,6 +251,7 @@ mod tests {
                 username: "admin".to_string(),
                 password_hash: "$argon2id$v=19$m=19456,t=2,p=1$...".to_string(),
                 download_token_hash: None,
+                maintenance_token_hash: None,
             },
             storage: StorageConfig {
                 directory: "storage".into(),
@@ -275,6 +278,7 @@ mod tests {
                 username: "ab".to_string(), // Too short
                 password_hash: "$argon2id$v=19$m=19456,t=2,p=1$...".to_string(),
                 download_token_hash: None,
+                maintenance_token_hash: None,
             },
             storage: StorageConfig {
                 directory: "storage".into(),

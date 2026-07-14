@@ -86,7 +86,21 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
     let public_routes = Router::new()
         .route("/api/health", get(handlers::health_check))
         .route("/api/login", post(handlers::login))
-        .route("/api/media/instances/{instance_id}/{slot}", get(handlers::serve_instance_media));
+        .route(
+            "/api/media/instances/{instance_id}/{slot}",
+            get(handlers::serve_instance_media),
+        )
+        .route(
+            "/api/maintenance/status",
+            get(handlers::get_maintenance_status),
+        );
+
+    let maintenance_check_routes = Router::new()
+        .route("/api/maintenance/check", post(handlers::check_maintenance))
+        .layer(middleware::from_fn_with_state(
+            config.clone(),
+            auth::maintenance_auth_middleware,
+        ));
 
     let protected_launcher_routes = Router::new()
         .route("/api/info", get(handlers::info_modpack))
@@ -137,6 +151,26 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
             "/api/admin/instances/{instance_id}/mods",
             delete(handlers::remove_instance_mod),
         )
+        .route(
+            "/api/admin/maintenance/toggle",
+            post(handlers::toggle_maintenance),
+        )
+        .route(
+            "/api/admin/maintenance/config",
+            post(handlers::update_maintenance_config),
+        )
+        .route(
+            "/api/admin/maintenance/whitelist",
+            get(handlers::list_whitelist),
+        )
+        .route(
+            "/api/admin/maintenance/whitelist/{nick}",
+            post(handlers::add_whitelist_entry),
+        )
+        .route(
+            "/api/admin/maintenance/whitelist/{nick}",
+            delete(handlers::remove_whitelist_entry),
+        )
         .layer(middleware::from_fn_with_state(
             config.clone(),
             auth::auth_middleware,
@@ -148,6 +182,7 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
     let mut app = Router::new()
         .merge(public_routes)
         .merge(protected_launcher_routes)
+        .merge(maintenance_check_routes)
         .merge(admin_routes)
         .fallback_service(static_service)
         .layer(DefaultBodyLimit::max(max_body_size))
