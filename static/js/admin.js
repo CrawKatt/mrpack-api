@@ -99,6 +99,12 @@ class ApiClient {
         });
     }
 
+    async deleteInstance(instanceId) {
+        return this.request(`${API_CONFIG.endpoints.instances}/${encodeURIComponent(instanceId)}`, {
+            method: 'DELETE'
+        });
+    }
+
     async uploadInstanceModpack(instanceId, file, onProgress = null) {
         return this.uploadMultipart(
             `${API_CONFIG.endpoints.instances}/${encodeURIComponent(instanceId)}/upload`,
@@ -344,6 +350,7 @@ class UIManager {
                     <button class="btn btn-primary" type="button" data-action="upload-instance-media" data-slot="background" data-instance-id="${this.escapeHtml(instance.id)}">Subir background</button>
                     <button class="btn btn-success" type="button" data-action="generate-code" data-instance-id="${this.escapeHtml(instance.id)}" ${instance.modpack?.available ? '' : 'disabled'}>Generar código</button>
                     <button class="btn btn-success" type="button" data-action="add-instance-mod" data-instance-id="${this.escapeHtml(instance.id)}" ${instance.modpack?.available ? '' : 'disabled'}>Añadir .jar</button>
+                    <button class="btn btn-danger" type="button" data-action="delete-instance" data-instance-id="${this.escapeHtml(instance.id)}" data-instance-name="${this.escapeHtml(instance.name)}">Eliminar instancia</button>
                 </div>
             `;
             this.elements.instancesList.appendChild(item);
@@ -472,6 +479,7 @@ class AdminPanel {
             if (button.dataset.action === 'upload-instance-modpack') this.handleUploadInstanceModpack(button.dataset.instanceId);
             if (button.dataset.action === 'add-instance-mod') this.handleAddInstanceMod(button.dataset.instanceId);
             if (button.dataset.action === 'upload-instance-media') this.handleUploadInstanceMedia(button.dataset.instanceId, button.dataset.slot);
+            if (button.dataset.action === 'delete-instance') this.handleDeleteInstance(button.dataset.instanceId, button.dataset.instanceName);
         });
         this.ui.elements.refreshBtn?.addEventListener('click', () => {
             this.loadInfo();
@@ -668,6 +676,20 @@ class AdminPanel {
         } catch (error) {
             console.error('Instance mod upload failed:', error);
             this.ui.showAlert(error.message || 'Failed to add mod to instance', 'error');
+        }
+    }
+
+    async handleDeleteInstance(instanceId, instanceName) {
+        if (!instanceId) return;
+        const label = instanceName || instanceId;
+        if (!confirm(`¿Eliminar la instancia "${label}"? Esta acción borra el .mrpack, los códigos asociados y los archivos de media. No se puede deshacer.`)) return;
+        try {
+            await this.api.deleteInstance(instanceId);
+            this.ui.showAlert(`Instancia "${label}" eliminada`, 'success');
+            await this.loadInstances();
+        } catch (error) {
+            console.error('Delete instance failed:', error);
+            this.ui.showAlert(error.message || 'Failed to delete instance', 'error');
         }
     }
 
