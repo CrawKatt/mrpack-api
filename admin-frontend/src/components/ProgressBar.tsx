@@ -11,10 +11,10 @@ export function ProgressBar({ value, className = "" }: Props) {
       aria-valuenow={Math.round(clamped)}
       aria-valuemin={0}
       aria-valuemax={100}
-      className={["h-2 w-full overflow-hidden rounded-full bg-gray-200", className].join(" ")}
+      className={["h-1.5 w-full overflow-hidden rounded-full bg-gray-200", className].join(" ")}
     >
       <div
-        className="h-full bg-primary-500 transition-[width] duration-150"
+        className="h-full bg-emerald-600 transition-[width] duration-150"
         style={{ width: `${clamped}%` }}
       />
     </div>

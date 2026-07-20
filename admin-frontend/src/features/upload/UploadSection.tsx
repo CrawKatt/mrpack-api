@@ -9,6 +9,7 @@ import { Button } from "../../components/Button";
 import { ProgressBar } from "../../components/ProgressBar";
 import { DropZone } from "./DropZone";
 import { modpackKeys } from "../modpack/useModpack";
+import { UploadCloud } from "lucide-react";
 
 export function UploadSection() {
   const { t } = useI18n();
@@ -51,7 +52,7 @@ export function UploadSection() {
   };
 
   return (
-    <Card title={<>{t.upload.heading}</>}>
+    <Card title={<><UploadCloud size={18} /> {t.upload.heading}</>}>
       <DropZone
         accept=".mrpack"
         title={t.upload.dropzoneTitle}
@@ -69,7 +70,7 @@ export function UploadSection() {
         onClick={handleUpload}
         disabled={!file}
         loading={uploadMutation.isPending}
-        icon={<span aria-hidden>⬆️</span>}
+        icon={<UploadCloud size={16} />}
       >
         {t.upload.upload}
       </Button>

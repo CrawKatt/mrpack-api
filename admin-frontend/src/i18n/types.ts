@@ -6,6 +6,20 @@ export interface Dict {
     subtitle: string;
     logout: string;
     logoutConfirm: string;
+    admin: string;
+    workspace: string;
+    serverOnline: string;
+    primaryNavigation: string;
+    openMenu: string;
+    enableDarkMode: string;
+    enableLightMode: string;
+    viewDescriptions: {
+      dashboard: string;
+      instances: string;
+      modpack: string;
+      maintenance: string;
+      api: string;
+    };
   };
   common: {
     cancel: string;
@@ -23,11 +37,35 @@ export interface Dict {
     no: string;
   };
   nav: {
+    dashboard: string;
     modpack: string;
     mods: string;
     upload: string;
     instances: string;
+    maintenance: string;
     apiLinks: string;
+  };
+  dashboard: {
+    eyebrow: string;
+    heading: string;
+    description: string;
+    instances: string;
+    activeInstances: string;
+    accessCodes: string;
+    mods: string;
+    currentModpack: string;
+    recentInstances: string;
+    viewAll: string;
+    noInstances: string;
+    quickActions: string;
+    createInstance: string;
+    replaceModpack: string;
+    configureMaintenance: string;
+    maintenanceActive: string;
+    maintenanceActiveDescription: string;
+    version: string;
+    minecraft: string;
+    loader: string;
   };
   modpack: {
     heading: string;
@@ -80,6 +118,14 @@ export interface Dict {
     create: string;
     createBtn: string;
     createSuccess: string;
+    search: string;
+    count: (n: number) => string;
+    identityHint: string;
+    mediaHint: string;
+    moreActions: string;
+    hideActions: string;
+    whitelist: string;
+    codesLabel: string;
     fields: {
       name: string;
       iconUrl: string;
@@ -112,6 +158,37 @@ export interface Dict {
   apiLinks: {
     heading: string;
     health: string;
+    description: string;
+    method: string;
+    protected: string;
+    public: string;
+    open: string;
+  };
+  maintenance: {
+    heading: string;
+    description: string;
+    enabled: string;
+    disabled: string;
+    toggleHint: string;
+    premiumOnly: string;
+    premiumOnlyHint: string;
+    message: string;
+    messageHint: string;
+    save: string;
+    saved: string;
+    toggledOn: string;
+    toggledOff: string;
+    whitelist: string;
+    whitelistHint: string;
+    nickPlaceholder: string;
+    add: string;
+    empty: string;
+    invalidNick: string;
+    added: (nick: string) => string;
+    removed: (nick: string) => string;
+    removeConfirm: (nick: string) => string;
+    yourNick: string;
+    yourNickHint: string;
   };
   alerts: {
     instanceCreated: string;

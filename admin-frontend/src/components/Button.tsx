@@ -12,16 +12,15 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const variantClasses: Record<Variant, string> = {
-  primary:
-    "bg-gradient-to-br from-primary-500 to-primary-700 text-white hover:from-primary-600 hover:to-primary-800 shadow-sm",
+  primary: "bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm",
   secondary:
-    "bg-white text-gray-700 border border-gray-300 hover:bg-gray-50",
+    "bg-white text-gray-700 border border-gray-300 hover:border-gray-400 hover:bg-gray-50",
   danger:
-    "bg-red-500 text-white hover:bg-red-600 shadow-sm",
+    "bg-red-600 text-white hover:bg-red-700 shadow-sm",
   success:
     "bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm",
   ghost:
-    "bg-transparent text-gray-600 hover:bg-gray-100",
+    "bg-transparent text-gray-600 hover:bg-gray-100 hover:text-gray-900",
 };
 
 const sizeClasses: Record<Size, string> = {
@@ -47,9 +46,8 @@ export function Button({
       {...rest}
       disabled={isDisabled}
       className={[
-        "inline-flex items-center justify-center gap-2 rounded-lg font-semibold transition-all",
+        "inline-flex shrink-0 items-center justify-center gap-2 rounded-md font-semibold transition-colors",
         "disabled:opacity-50 disabled:cursor-not-allowed",
-        "hover:-translate-y-0.5 active:translate-y-0",
         variantClasses[variant],
         sizeClasses[size],
         fullWidth ? "w-full" : "",
@@ -65,7 +63,7 @@ export function Button({
 function Spinner() {
   return (
     <span
-      className="inline-block h-4 w-4 rounded-full border-2 border-white/40 border-t-white animate-spin"
+      className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent opacity-75"
       aria-hidden="true"
     />
   );

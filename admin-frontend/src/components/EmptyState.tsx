@@ -11,7 +11,7 @@ export function EmptyState({ icon, title, description, className = "" }: Props) 
   return (
     <div
       className={[
-        "flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-gray-200 bg-gray-50 px-6 py-10 text-center",
+        "flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 bg-gray-50 px-6 py-10 text-center",
         className,
       ].join(" ")}
     >

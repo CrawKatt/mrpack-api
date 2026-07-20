@@ -12,7 +12,7 @@ export function Spinner({ size = "md", className = "", label }: Props) {
       aria-label={label || "Loading"}
       className={[
         "inline-block rounded-full animate-spin",
-        "border-gray-200 border-t-primary-600",
+        "border-gray-200 border-t-emerald-600",
         dim,
         className,
       ].join(" ")}

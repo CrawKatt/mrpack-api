@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
+import { AlertCircle, CheckCircle2, Info } from "lucide-react";
 
 export type AlertVariant = "success" | "error" | "info";
 
@@ -22,10 +23,10 @@ interface AlertContextValue {
 
 const AlertContext = createContext<AlertContextValue | null>(null);
 
-const ICONS: Record<AlertVariant, string> = {
-  success: "✅",
-  error: "❌",
-  info: "ℹ️",
+const ICONS = {
+  success: CheckCircle2,
+  error: AlertCircle,
+  info: Info,
 };
 
 const STYLES: Record<AlertVariant, string> = {
@@ -60,11 +61,14 @@ export function AlertProvider({ children }: { children: ReactNode }) {
             key={it.id}
             role="status"
             className={[
-              "pointer-events-auto flex items-start gap-2 rounded-xl border px-4 py-3 text-sm shadow-md animate-slide-in",
+              "pointer-events-auto flex items-start gap-3 rounded-lg border px-4 py-3 text-sm shadow-lg animate-slide-in",
               STYLES[it.variant],
             ].join(" ")}
           >
-            <span aria-hidden="true">{ICONS[it.variant]}</span>
+            {(() => {
+              const Icon = ICONS[it.variant];
+              return <Icon aria-hidden="true" className="mt-0.5 shrink-0" size={17} />;
+            })()}
             <span className="flex-1">{it.message}</span>
           </div>
         ))}

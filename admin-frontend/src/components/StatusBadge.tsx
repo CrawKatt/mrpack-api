@@ -15,7 +15,7 @@ export function StatusBadge({
   return (
     <span
       className={[
-        "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold",
+        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold",
         available
           ? "bg-emerald-100 text-emerald-800"
           : "bg-rose-100 text-rose-800",

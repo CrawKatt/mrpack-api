@@ -9,6 +9,7 @@ import { Button } from "../../components/Button";
 import { ProgressBar } from "../../components/ProgressBar";
 import { DropZone } from "../upload/DropZone";
 import { modpackKeys, useModpack } from "../modpack/useModpack";
+import { PackagePlus } from "lucide-react";
 
 export function ModManagementSection() {
   const { t } = useI18n();
@@ -55,7 +56,7 @@ export function ModManagementSection() {
   };
 
   return (
-    <Card title={<>{t.mods.heading}</>}>
+    <Card title={<><PackagePlus size={18} /> {t.mods.heading}</>}>
       <DropZone
         accept=".jar"
         title={t.mods.dropzoneTitle}
@@ -73,7 +74,7 @@ export function ModManagementSection() {
         onClick={handleAdd}
         disabled={!file}
         loading={addMutation.isPending}
-        icon={<span aria-hidden>➕</span>}
+        icon={<PackagePlus size={16} />}
       >
         {t.mods.add}
       </Button>

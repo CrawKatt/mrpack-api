@@ -9,7 +9,7 @@ export function LangToggle() {
     <div
       role="group"
       aria-label="Language"
-      className="inline-flex items-center rounded-lg bg-gray-100 p-1 text-xs font-semibold"
+      className="inline-flex h-9 items-center rounded-md border border-gray-200 bg-white p-0.5 text-[11px] font-semibold"
     >
       {langs.map((code) => {
         const active = code === lang;
@@ -20,9 +20,9 @@ export function LangToggle() {
             onClick={() => setLang(code)}
             aria-pressed={active}
             className={[
-              "h-7 rounded-md px-3 uppercase transition-all",
+              "h-7 rounded px-2.5 uppercase transition-colors",
               active
-                ? "bg-white text-primary-700 shadow-sm"
+                ? "bg-gray-900 text-white"
                 : "text-gray-500 hover:text-gray-700",
             ].join(" ")}
           >

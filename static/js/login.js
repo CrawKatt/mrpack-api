@@ -14,7 +14,7 @@ const API_CONFIG = {
         upload: '/api/upload',
         login: '/api/login'
     },
-    adminPanelUrl: '/admin.html'
+    adminPanelUrl: '/admin/'
 };
 
 // ============================================================================

@@ -82,3 +82,9 @@ export interface UploadFileResponse {
   file_name: string;
   file_size_mb: number;
 }
+
+export interface MaintenanceStatus {
+  enabled: boolean;
+  premiumOnly: boolean;
+  message: string;
+}

@@ -5,6 +5,7 @@ import type {
   CreateInstancePayload,
   GenerateCodePayload,
   InstanceCodeResponse,
+  MaintenanceStatus,
   ModpackDetails,
   UploadFileResponse,
 } from "../types/api";
@@ -33,19 +34,6 @@ export const session = {
   },
 };
 
-async function parseError(response: Response, fallback: string): Promise<string> {
-  const contentType = response.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    try {
-      const data = (await response.json()) as { error?: string; message?: string };
-      return data.error || data.message || fallback;
-    } catch {
-      return fallback;
-    }
-  }
-  return fallback;
-}
-
 async function request<T>(endpoint: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(endpoint, {
     ...init,
@@ -67,10 +55,8 @@ async function request<T>(endpoint: string, init: RequestInit = {}): Promise<T> 
       session.logout();
       throw new Error("unauthorized");
     }
-    const message = await parseError(
-      response,
-      `HTTP error ${response.status}`,
-    ).catch(() => `HTTP error ${response.status}`);
+    const errorData = data as { error?: string; message?: string } | null;
+    const message = errorData?.error || errorData?.message || `HTTP error ${response.status}`;
     throw new Error(message);
   }
 
@@ -152,6 +138,41 @@ export const api = {
 
   listInstances(): Promise<AdminInstancesResponse> {
     return request<AdminInstancesResponse>("/api/admin/instances");
+  },
+
+  getMaintenanceStatus(): Promise<MaintenanceStatus> {
+    return request<MaintenanceStatus>("/api/maintenance/status");
+  },
+
+  toggleMaintenance(): Promise<MaintenanceStatus> {
+    return request<MaintenanceStatus>("/api/admin/maintenance/toggle", {
+      method: "POST",
+    });
+  },
+
+  updateMaintenanceConfig(premiumOnly: boolean, message: string): Promise<MaintenanceStatus> {
+    return request<MaintenanceStatus>("/api/admin/maintenance/config", {
+      method: "POST",
+      body: JSON.stringify({ premiumOnly, message }),
+    });
+  },
+
+  listWhitelist(): Promise<string[]> {
+    return request<string[]>("/api/admin/maintenance/whitelist");
+  },
+
+  addWhitelistEntry(nick: string): Promise<MaintenanceStatus> {
+    return request<MaintenanceStatus>(
+      `/api/admin/maintenance/whitelist/${encodeURIComponent(nick)}`,
+      { method: "POST" },
+    );
+  },
+
+  removeWhitelistEntry(nick: string): Promise<MaintenanceStatus> {
+    return request<MaintenanceStatus>(
+      `/api/admin/maintenance/whitelist/${encodeURIComponent(nick)}`,
+      { method: "DELETE" },
+    );
   },
 
   createInstance(
