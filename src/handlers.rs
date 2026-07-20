@@ -3,11 +3,11 @@ use crate::error::{AppError, ResponseResult};
 use crate::utils::constant_time_compare;
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
-    Json,
+    Extension, Json,
     body::Body,
     extract::{Multipart, Path as AxumPath, Query, State},
     http::{StatusCode, header},
-    response::Response,
+    response::{Response, sse::{Event, Sse}},
 };
 use bon::Builder;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::broadcast;
 use tokio_util::io::ReaderStream;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
@@ -2227,7 +2228,289 @@ mod tests {
     }
 }
 
+// =============================================================================
+// Maintenance mode (whitelist + premium-only toggle)
+// =============================================================================
 
+const MAINTENANCE_DEFAULT_MESSAGE: &str = "Membership to instances is restricted at this moment. \
+    If you are anticipating participation in an event, kindly provide your Minecraft username to \
+    the event organizer via the appropriate Discord channel.";
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub premium_only: bool,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub whitelist: Vec<String>,
+}
+
+impl Default for MaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            premium_only: false,
+            message: MAINTENANCE_DEFAULT_MESSAGE.to_string(),
+            whitelist: Vec::new(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceStatusPublic {
+    pub enabled: bool,
+    pub premium_only: bool,
+    pub message: String,
+}
+
+impl From<&MaintenanceConfig> for MaintenanceStatusPublic {
+    fn from(cfg: &MaintenanceConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            premium_only: cfg.premium_only,
+            message: cfg.message.clone(),
+        }
+    }
+}
+
+fn maintenance_store_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn maintenance_store_path(config: &Config) -> PathBuf {
+    config.storage.directory.join("maintenance.json")
+}
+
+async fn load_maintenance(config: &Config) -> ResponseResult<MaintenanceConfig> {
+    let path = maintenance_store_path(config);
+    if !path.exists() {
+        return Ok(MaintenanceConfig::default());
+    }
+    let contents = fs::read_to_string(&path).await.map_err(AppError::FileIo)?;
+    serde_json::from_str(&contents)
+        .map_err(|why| AppError::Internal(format!("Invalid maintenance store: {why}")))
+}
+
+async fn save_maintenance(config: &Config, store: &MaintenanceConfig) -> ResponseResult<()> {
+    fs::create_dir_all(&config.storage.directory)
+        .await
+        .map_err(AppError::FileIo)?;
+    let path = maintenance_store_path(config);
+    let temp_path = path.with_extension("tmp");
+    let data = serde_json::to_vec_pretty(store)
+        .map_err(|why| AppError::Internal(format!("Failed to serialize maintenance store: {why}")))?;
+    fs::write(&temp_path, data).await.map_err(AppError::FileIo)?;
+    fs::rename(&temp_path, &path).await.map_err(AppError::FileIo)?;
+    Ok(())
+}
+
+fn normalize_nick(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.len() < 3 || lower.len() > 16 {
+        return None;
+    }
+    if !lower
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    Some(lower)
+}
+
+// ----- Public endpoints -----
+
+pub async fn get_maintenance_status(
+    State(config): State<Arc<Config>>,
+) -> ResponseResult<Json<MaintenanceStatusPublic>> {
+    let store = load_maintenance(&config).await?;
+    Ok(Json(MaintenanceStatusPublic::from(&store)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceCheckRequest {
+    pub username: String,
+    pub account_type: String,
+}
+
+#[derive(Serialize)]
+pub struct MaintenanceCheckResponse {
+    pub allowed: bool,
+    pub reason: Option<String>,
+}
+
+pub async fn check_maintenance(
+    State(config): State<Arc<Config>>,
+    Json(payload): Json<MaintenanceCheckRequest>,
+) -> ResponseResult<Json<MaintenanceCheckResponse>> {
+    let store = load_maintenance(&config).await?;
+
+    if !store.enabled {
+        return Ok(Json(MaintenanceCheckResponse {
+            allowed: true,
+            reason: None,
+        }));
+    }
+
+    let nick = match normalize_nick(&payload.username) {
+        Some(n) => n,
+        None => return Err(AppError::Validation("invalid username".to_string())),
+    };
+
+    let is_premium = payload.account_type.eq_ignore_ascii_case("premium");
+
+    if store.whitelist.iter().any(|n| n == &nick) {
+        return Ok(Json(MaintenanceCheckResponse {
+            allowed: true,
+            reason: None,
+        }));
+    }
+
+    if store.premium_only && !is_premium {
+        return Ok(Json(MaintenanceCheckResponse {
+            allowed: false,
+            reason: Some(store.message.clone()),
+        }));
+    }
+
+    if is_premium {
+        return Ok(Json(MaintenanceCheckResponse {
+            allowed: true,
+            reason: None,
+        }));
+    }
+
+    Ok(Json(MaintenanceCheckResponse {
+        allowed: false,
+        reason: Some(store.message.clone()),
+    }))
+}
+
+// ----- Admin endpoints -----
+
+pub async fn toggle_maintenance(
+    State(config): State<Arc<Config>>,
+    Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
+) -> ResponseResult<Json<MaintenanceStatusPublic>> {
+    let _guard = maintenance_store_lock().lock().await;
+    let mut store = load_maintenance(&config).await?;
+    store.enabled = !store.enabled;
+    save_maintenance(&config, &store).await?;
+    let _ = tx.send(store.clone());
+    Ok(Json(MaintenanceStatusPublic::from(&store)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMaintenanceConfigRequest {
+    pub premium_only: bool,
+    pub message: String,
+}
+
+pub async fn update_maintenance_config(
+    State(config): State<Arc<Config>>,
+    Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
+    Json(req): Json<UpdateMaintenanceConfigRequest>,
+) -> ResponseResult<Json<MaintenanceStatusPublic>> {
+    if req.message.trim().is_empty() {
+        return Err(AppError::Validation("message cannot be empty".to_string()));
+    }
+    let _guard = maintenance_store_lock().lock().await;
+    let mut store = load_maintenance(&config).await?;
+    store.premium_only = req.premium_only;
+    store.message = req.message;
+    save_maintenance(&config, &store).await?;
+    let _ = tx.send(store.clone());
+    Ok(Json(MaintenanceStatusPublic::from(&store)))
+}
+
+pub async fn list_whitelist(
+    State(config): State<Arc<Config>>,
+) -> ResponseResult<Json<Vec<String>>> {
+    let store = load_maintenance(&config).await?;
+    Ok(Json(store.whitelist))
+}
+
+pub async fn add_whitelist_entry(
+    State(config): State<Arc<Config>>,
+    AxumPath(nick): AxumPath<String>,
+    Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
+) -> ResponseResult<Json<MaintenanceStatusPublic>> {
+    let n = normalize_nick(&nick).ok_or_else(|| {
+        AppError::Validation("invalid nick (3-16 chars, [a-z0-9_])".to_string())
+    })?;
+    let _guard = maintenance_store_lock().lock().await;
+    let mut store = load_maintenance(&config).await?;
+    if !store.whitelist.contains(&n) {
+        store.whitelist.push(n);
+        save_maintenance(&config, &store).await?;
+        let _ = tx.send(store.clone());
+    }
+    Ok(Json(MaintenanceStatusPublic::from(&store)))
+}
+
+pub async fn remove_whitelist_entry(
+    State(config): State<Arc<Config>>,
+    AxumPath(nick): AxumPath<String>,
+    Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
+) -> ResponseResult<Json<MaintenanceStatusPublic>> {
+    let n = normalize_nick(&nick).ok_or_else(|| {
+        AppError::Validation("invalid nick (3-16 chars, [a-z0-9_])".to_string())
+    })?;
+    let _guard = maintenance_store_lock().lock().await;
+    let mut store = load_maintenance(&config).await?;
+    let before = store.whitelist.len();
+    store.whitelist.retain(|x| x != &n);
+    if store.whitelist.len() != before {
+        save_maintenance(&config, &store).await?;
+        let _ = tx.send(store.clone());
+    }
+    Ok(Json(MaintenanceStatusPublic::from(&store)))
+}
+
+// ----- SSE live updates -----
+
+pub async fn maintenance_stream(
+    State(config): State<Arc<Config>>,
+    Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
+) -> Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, std::convert::Infallible>>> {
+    use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+
+    let initial = load_maintenance(&config).await.unwrap_or_default();
+    let initial_public = MaintenanceStatusPublic::from(&initial);
+
+    let rx = tx.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|result| {
+        match result {
+            Ok(config) => {
+                let public = MaintenanceStatusPublic::from(&config);
+                let payload = serde_json::to_string(&public).unwrap_or_default();
+                Some(Ok(Event::default().data(payload)))
+            }
+            Err(_) => None,
+        }
+    });
+
+    let initial_payload = serde_json::to_string(&initial_public).unwrap_or_default();
+    let initial_stream = tokio_stream::once(Ok(Event::default().data(initial_payload)));
+    let combined = initial_stream.chain(stream);
+
+    Sse::new(combined).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(30))
+            .text("keep-alive"),
+    )
+}
 
 

@@ -54,6 +54,26 @@ pub async fn download_auth_middleware(
     }
 }
 
+pub async fn maintenance_auth_middleware(
+    State(state): State<Arc<Config>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    match verify_maintenance_auth(request.headers(), &state) {
+        Ok(true) => next.run(request).await,
+        Ok(false) => {
+            tracing::warn!("Maintenance check endpoint rejected unauthorized request");
+            AppError::Unauthorized("Missing or invalid maintenance credentials".to_string())
+                .into_response()
+        }
+        Err(why) => {
+            tracing::error!("Maintenance authentication error: {why}");
+            AppError::Unauthorized("Maintenance authentication error".to_string())
+                .into_response()
+        }
+    }
+}
+
 pub async fn https_middleware(
     State(state): State<Arc<Config>>,
     request: Request,
@@ -95,6 +115,18 @@ pub fn verify_download_auth(headers: &HeaderMap, config: &Config) -> anyhow::Res
     };
 
     verify_download_token(token, config)
+}
+
+pub fn verify_maintenance_auth(headers: &HeaderMap, config: &Config) -> anyhow::Result<bool> {
+    if verify_admin_auth(headers, config)? {
+        return Ok(true);
+    }
+
+    let Some(token) = bearer_token(headers) else {
+        return Ok(false);
+    };
+
+    verify_maintenance_token(token, config)
 }
 
 /// Verificar credenciales de Basic Auth
@@ -140,6 +172,23 @@ fn verify_download_token(token: &str, config: &Config) -> anyhow::Result<bool> {
 
     let password_hash = PasswordHash::new(token_hash)
         .map_err(|why| anyhow::anyhow!("Invalid download token hash format: {why}"))?;
+
+    let argon2 = Argon2::default();
+
+    match argon2.verify_password(token.as_bytes(), &password_hash) {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
+}
+
+fn verify_maintenance_token(token: &str, config: &Config) -> anyhow::Result<bool> {
+    let Some(token_hash) = &config.auth.maintenance_token_hash else {
+        tracing::warn!("Maintenance token was provided, but MAINTENANCE_TOKEN_HASH is not configured");
+        return Ok(false);
+    };
+
+    let password_hash = PasswordHash::new(token_hash)
+        .map_err(|why| anyhow::anyhow!("Invalid maintenance token hash format: {why}"))?;
 
     let argon2 = Argon2::default();
 

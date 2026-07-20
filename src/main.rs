@@ -13,6 +13,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use std::sync::Arc;
+use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -21,6 +22,7 @@ use tracing::Level;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use config::Config;
+use handlers::MaintenanceConfig;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -83,10 +85,30 @@ fn init_logging() -> Result<()> {
 }
 
 fn build_app(config: Arc<Config>) -> Result<Router> {
+    let maintenance_tx: broadcast::Sender<MaintenanceConfig> = broadcast::channel(64).0;
+
     let public_routes = Router::new()
         .route("/api/health", get(handlers::health_check))
         .route("/api/login", post(handlers::login))
-        .route("/api/media/instances/{instance_id}/{slot}", get(handlers::serve_instance_media));
+        .route(
+            "/api/media/instances/{instance_id}/{slot}",
+            get(handlers::serve_instance_media),
+        )
+        .route(
+            "/api/maintenance/status",
+            get(handlers::get_maintenance_status),
+        )
+        .route(
+            "/api/maintenance/stream",
+            get(handlers::maintenance_stream),
+        );
+
+    let maintenance_check_routes = Router::new()
+        .route("/api/maintenance/check", post(handlers::check_maintenance))
+        .layer(middleware::from_fn_with_state(
+            config.clone(),
+            auth::maintenance_auth_middleware,
+        ));
 
     let protected_launcher_routes = Router::new()
         .route("/api/info", get(handlers::info_modpack))
@@ -105,10 +127,17 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
             auth::download_auth_middleware,
         ));
 
+    let two_gb = 2 * 1024 * 1024 * 1024;
     let admin_routes = Router::new()
-        .route("/api/upload", post(handlers::upload_modpack))
+        .route(
+            "/api/upload",
+            post(handlers::upload_modpack).layer(DefaultBodyLimit::max(two_gb)),
+        )
         .route("/api/delete", delete(handlers::delete_modpack))
-        .route("/api/mods", post(handlers::add_mod))
+        .route(
+            "/api/mods",
+            post(handlers::add_mod).layer(DefaultBodyLimit::max(two_gb)),
+        )
         .route("/api/mods", delete(handlers::remove_mod))
         .route("/api/admin/instances", get(handlers::list_instances))
         .route("/api/admin/instances", post(handlers::create_instance))
@@ -119,7 +148,7 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
         )
         .route(
             "/api/admin/instances/{instance_id}/upload",
-            post(handlers::upload_instance_modpack),
+            post(handlers::upload_instance_modpack).layer(DefaultBodyLimit::max(two_gb)),
         )
         .route(
             "/api/admin/instances/{instance_id}/modpack",
@@ -131,11 +160,31 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
         )
         .route(
             "/api/admin/instances/{instance_id}/mods",
-            post(handlers::add_instance_mod),
+            post(handlers::add_instance_mod).layer(DefaultBodyLimit::max(two_gb)),
         )
         .route(
             "/api/admin/instances/{instance_id}/mods",
             delete(handlers::remove_instance_mod),
+        )
+        .route(
+            "/api/admin/maintenance/toggle",
+            post(handlers::toggle_maintenance),
+        )
+        .route(
+            "/api/admin/maintenance/config",
+            post(handlers::update_maintenance_config),
+        )
+        .route(
+            "/api/admin/maintenance/whitelist",
+            get(handlers::list_whitelist),
+        )
+        .route(
+            "/api/admin/maintenance/whitelist/{nick}",
+            post(handlers::add_whitelist_entry),
+        )
+        .route(
+            "/api/admin/maintenance/whitelist/{nick}",
+            delete(handlers::remove_whitelist_entry),
         )
         .layer(middleware::from_fn_with_state(
             config.clone(),
@@ -148,9 +197,11 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
     let mut app = Router::new()
         .merge(public_routes)
         .merge(protected_launcher_routes)
+        .merge(maintenance_check_routes)
         .merge(admin_routes)
         .fallback_service(static_service)
         .layer(DefaultBodyLimit::max(max_body_size))
+        .layer(axum::Extension(maintenance_tx))
         .layer(middleware::from_fn_with_state(
             config.clone(),
             auth::https_middleware,
