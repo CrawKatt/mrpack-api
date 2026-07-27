@@ -106,9 +106,21 @@ struct StoredInstance {
     id: String,
     name: String,
     #[serde(default)]
+    is_public: bool,
+    #[serde(default = "default_true")]
+    download_enabled: bool,
+    #[serde(default = "default_true")]
+    access_enabled: bool,
+    #[serde(default)]
+    is_main: bool,
+    #[serde(default)]
     whitelist: Vec<WhitelistEntry>,
     #[serde(default)]
     media: InstanceMedia,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -158,9 +170,14 @@ pub struct RedeemCodeResponse {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AdminInstanceView {
     pub id: String,
     pub name: String,
+    pub is_public: bool,
+    pub download_enabled: bool,
+    pub access_enabled: bool,
+    pub is_main: bool,
     pub whitelist_count: usize,
     pub codes: Vec<InstanceCode>,
     pub modpack: ModpackDetails,
@@ -178,6 +195,38 @@ pub struct CreateInstanceRequest {
     pub name: String,
     pub icon_url: Option<String>,
     pub background_url: Option<String>,
+    #[serde(default)]
+    pub is_public: Option<bool>,
+    #[serde(default)]
+    pub is_main: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInstanceRequest {
+    pub name: Option<String>,
+    pub is_public: Option<bool>,
+    pub download_enabled: Option<bool>,
+    pub access_enabled: Option<bool>,
+    pub is_main: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MainPackConfig {
+    #[serde(default = "default_true")]
+    pub access_enabled: bool,
+    #[serde(default = "default_true")]
+    pub download_enabled: bool,
+}
+
+impl Default for MainPackConfig {
+    fn default() -> Self {
+        Self {
+            access_enabled: true,
+            download_enabled: true,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -359,12 +408,17 @@ pub struct RemoveModRequest {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    #[serde(default)]
+    pub remember: bool,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginResponse {
     pub success: bool,
     pub message: String,
+    pub token: String,
+    pub expires_at: u64,
 }
 
 pub async fn health_check() -> ResponseResult<Json<ApiResponse>> {
@@ -375,8 +429,11 @@ pub async fn health_check() -> ResponseResult<Json<ApiResponse>> {
 
 pub async fn login(
     State(config): State<Arc<Config>>,
+    headers: axum::http::HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> ResponseResult<Json<LoginResponse>> {
+    crate::auth::check_login_rate_limit(&headers)?;
+
     tracing::info!("Login attempt for user: {}", payload.username);
 
     let username_matches = constant_time_compare(
@@ -384,24 +441,59 @@ pub async fn login(
         config.auth.username.as_bytes(),
     );
 
-    if !username_matches {
-        tracing::warn!("Login failed: invalid username");
-        return Err(AppError::AuthenticationFailed("Credenciales incorrectas".to_string()));
-    }
-
     let password_hash = PasswordHash::new(&config.auth.password_hash)
         .map_err(|why| AppError::Internal(format!("Invalid password hash format: {why}")))?;
 
     let argon2 = Argon2::default();
-    let Ok(_) = argon2.verify_password(payload.password.as_bytes(), &password_hash) else {
-        tracing::warn!("Login failed: invalid password for user: {}", payload.username);
-        return Err(AppError::AuthenticationFailed("Credenciales incorrectas".to_string()))
-    };
+    let password_ok = argon2
+        .verify_password(payload.password.as_bytes(), &password_hash)
+        .is_ok();
+
+    if !(username_matches && password_ok) {
+        crate::auth::record_login_failure(&headers);
+        tracing::warn!("Login failed for user: {}", payload.username);
+        return Err(AppError::AuthenticationFailed(
+            "Credenciales incorrectas".to_string(),
+        ));
+    }
+
+    let sessions = crate::sessions::global_sessions(&config.storage.directory);
+    let (token, expires_at) = sessions
+        .create_session(&config.auth.username, payload.remember)
+        .await?;
+    crate::auth::record_login_success(&headers);
 
     Ok(Json(LoginResponse {
         success: true,
         message: "Autenticación exitosa".to_string(),
+        token,
+        expires_at,
     }))
+}
+
+pub async fn logout(
+    State(config): State<Arc<Config>>,
+    headers: axum::http::HeaderMap,
+) -> ResponseResult<Json<ApiResponse>> {
+    if let Some(token) = crate::auth::bearer_token(&headers) {
+        let sessions = crate::sessions::global_sessions(&config.storage.directory);
+        let _ = sessions.revoke_session(token).await?;
+    }
+    Ok(Json(ApiResponse::success("Logged out")))
+}
+
+pub async fn get_main_pack_config(
+    State(config): State<Arc<Config>>,
+) -> ResponseResult<Json<MainPackConfig>> {
+    Ok(Json(load_main_pack_config(&config).await?))
+}
+
+pub async fn update_main_pack_config(
+    State(config): State<Arc<Config>>,
+    Json(payload): Json<MainPackConfig>,
+) -> ResponseResult<Json<MainPackConfig>> {
+    save_main_pack_config(&config, &payload).await?;
+    Ok(Json(payload))
 }
 
 
@@ -423,6 +515,10 @@ pub async fn list_instances(
         instances.push(AdminInstanceView {
             id: instance.id.clone(),
             name: instance.name.clone(),
+            is_public: instance.is_public,
+            download_enabled: instance.download_enabled,
+            access_enabled: instance.access_enabled,
+            is_main: instance.is_main,
             whitelist_count: instance.whitelist.len(),
             codes,
             modpack,
@@ -430,7 +526,12 @@ pub async fn list_instances(
         });
     }
 
-    instances.sort_by(|left, right| left.name.cmp(&right.name));
+    instances.sort_by(|left, right| {
+        right
+            .is_main
+            .cmp(&left.is_main)
+            .then_with(|| left.name.cmp(&right.name))
+    });
     Ok(Json(AdminInstancesResponse { instances }))
 }
 
@@ -465,9 +566,21 @@ pub async fn create_instance(
         ..media
     };
 
+    let is_main = payload.is_main.unwrap_or(false);
+    let is_public = payload.is_public.unwrap_or(is_main);
+    if is_main {
+        for other in store.instances.values_mut() {
+            other.is_main = false;
+        }
+    }
+
     let instance = StoredInstance {
         id: id.clone(),
         name: name.to_string(),
+        is_public,
+        download_enabled: true,
+        access_enabled: true,
+        is_main,
         whitelist: Vec::new(),
         media,
     };
@@ -480,9 +593,79 @@ pub async fn create_instance(
     Ok(Json(AdminInstanceView {
         id: instance.id,
         name: instance.name,
+        is_public: instance.is_public,
+        download_enabled: instance.download_enabled,
+        access_enabled: instance.access_enabled,
+        is_main: instance.is_main,
         whitelist_count: 0,
         codes: Vec::new(),
         modpack: unavailable_modpack_details(MRPACK_FILENAME),
+        media: instance.media,
+    }))
+}
+
+pub async fn update_instance(
+    State(config): State<Arc<Config>>,
+    AxumPath(instance_id): AxumPath<String>,
+    Json(payload): Json<UpdateInstanceRequest>,
+) -> ResponseResult<Json<AdminInstanceView>> {
+    let _guard = instance_store_lock().lock().await;
+    let mut store = load_instance_store(&config).await?;
+    let instance = store
+        .instances
+        .get_mut(&instance_id)
+        .ok_or_else(|| AppError::FileNotFound("Instance not found".to_string()))?;
+
+    if let Some(name) = payload.name {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError::BadRequest("Instance name is required".to_string()));
+        }
+        instance.name = name.to_string();
+    }
+    if let Some(is_public) = payload.is_public {
+        instance.is_public = is_public;
+    }
+    if let Some(download_enabled) = payload.download_enabled {
+        instance.download_enabled = download_enabled;
+    }
+    if let Some(access_enabled) = payload.access_enabled {
+        instance.access_enabled = access_enabled;
+    }
+    if let Some(true) = payload.is_main {
+        instance.is_main = true;
+        instance.is_public = true;
+        let current_id = instance.id.clone();
+        for other in store.instances.values_mut() {
+            if other.id != current_id {
+                other.is_main = false;
+            }
+        }
+    } else if let Some(false) = payload.is_main {
+        instance.is_main = false;
+    }
+
+    let instance = store.instances.get(&instance_id).cloned().unwrap();
+    save_instance_store(&config, &store).await?;
+    let modpack = modpack_details_for_path(&get_instance_mrpack_path(&config, &instance.id)).await?;
+    let mut codes: Vec<InstanceCode> = store
+        .codes
+        .values()
+        .filter(|code| code.instance_id == instance.id)
+        .cloned()
+        .collect();
+    codes.sort_by(|left, right| left.code.cmp(&right.code));
+
+    Ok(Json(AdminInstanceView {
+        id: instance.id,
+        name: instance.name,
+        is_public: instance.is_public,
+        download_enabled: instance.download_enabled,
+        access_enabled: instance.access_enabled,
+        is_main: instance.is_main,
+        whitelist_count: instance.whitelist.len(),
+        codes,
+        modpack,
         media: instance.media,
     }))
 }
@@ -550,6 +733,22 @@ pub async fn redeem_instance_code(
     }
 
     let instance_id = instance_code.instance_id.clone();
+    let instance_flags = store
+        .instances
+        .get(&instance_id)
+        .ok_or_else(|| AppError::FileNotFound("Instance not found".to_string()))?;
+
+    if !instance_flags.access_enabled {
+        return Err(AppError::Forbidden(
+            "Esta instancia está desactivada por el administrador".to_string(),
+        ));
+    }
+    if instance_flags.is_public {
+        return Err(AppError::BadRequest(
+            "Esta instancia es pública y no requiere código de acceso".to_string(),
+        ));
+    }
+
     let modpack = modpack_details_for_path(&get_instance_mrpack_path(&config, &instance_id)).await?;
     if !modpack.available {
         return Err(AppError::BadRequest(
@@ -557,6 +756,10 @@ pub async fn redeem_instance_code(
         ));
     }
 
+    let instance_code = store
+        .codes
+        .get_mut(&code_value)
+        .ok_or_else(|| AppError::Forbidden("Invalid instance code".to_string()))?;
     instance_code.uses += 1;
     let instance = store
         .instances
@@ -597,7 +800,7 @@ pub async fn info_instance_modpack(
     AxumPath(instance_id): AxumPath<String>,
     headers: axum::http::HeaderMap,
 ) -> ResponseResult<Json<ModpackDetails>> {
-    require_instance_code(&config, &instance_id, &headers).await?;
+    require_instance_access(&config, &instance_id, &headers, false).await?;
     let store = load_instance_store(&config).await?;
     let media = store
         .instances
@@ -617,7 +820,7 @@ pub async fn download_instance_modpack(
     AxumPath(instance_id): AxumPath<String>,
     headers: axum::http::HeaderMap,
 ) -> ResponseResult<Response> {
-    require_instance_code(&config, &instance_id, &headers).await?;
+    require_instance_access(&config, &instance_id, &headers, true).await?;
     download_modpack_file(get_instance_mrpack_path(&config, &instance_id)).await
 }
 
@@ -716,7 +919,18 @@ pub async fn remove_instance_mod(
     remove_mod_from_path(&config, &instance_id, payload).await
 }
 
-pub async fn info_modpack(State(config): State<Arc<Config>>) -> ResponseResult<Json<ModpackDetails>> {
+pub async fn info_modpack(
+    State(config): State<Arc<Config>>,
+    headers: axum::http::HeaderMap,
+) -> ResponseResult<Json<ModpackDetails>> {
+    let is_admin = is_admin_caller(&headers, &config).await;
+    let main_pack = load_main_pack_config(&config).await?;
+    if !is_admin && !main_pack.access_enabled {
+        return Err(AppError::Forbidden(
+            "El modpack principal está desactivado".to_string(),
+        ));
+    }
+
     let file_path = get_mrpack_path(&config);
     if !file_path.exists() {
         let modpack_details = ModpackDetails::builder()
@@ -740,8 +954,14 @@ pub async fn info_modpack(State(config): State<Arc<Config>>) -> ResponseResult<J
         AppError::Internal("Stored modpack is invalid".to_string())
     })?;
 
+    let available = if is_admin {
+        true
+    } else {
+        main_pack.download_enabled
+    };
+
     let modpack_details = ModpackDetails::builder()
-        .available(true)
+        .available(available)
         .file_name(MRPACK_FILENAME.to_string())
         .file_size(file_size)
         .file_size_mb(file_size_mb)
@@ -751,7 +971,25 @@ pub async fn info_modpack(State(config): State<Arc<Config>>) -> ResponseResult<J
     Ok(Json(modpack_details))
 }
 
-pub async fn download_modpack(State(config): State<Arc<Config>>) -> ResponseResult<Response> {
+pub async fn download_modpack(
+    State(config): State<Arc<Config>>,
+    headers: axum::http::HeaderMap,
+) -> ResponseResult<Response> {
+    let is_admin = is_admin_caller(&headers, &config).await;
+    let main_pack = load_main_pack_config(&config).await?;
+    if !is_admin {
+        if !main_pack.access_enabled {
+            return Err(AppError::Forbidden(
+                "El modpack principal está desactivado".to_string(),
+            ));
+        }
+        if !main_pack.download_enabled {
+            return Err(AppError::Forbidden(
+                "La descarga del modpack principal está desactivada".to_string(),
+            ));
+        }
+    }
+
     let file_path = get_mrpack_path(&config);
     let metadata = fs::metadata(&file_path).await.map_err(|_| {
         AppError::FileNotFound("No modpack available for download".to_string())
@@ -1236,6 +1474,36 @@ async fn ensure_instance_exists(config: &Config, instance_id: &str) -> ResponseR
     }
 }
 
+async fn require_instance_access(
+    config: &Config,
+    instance_id: &str,
+    headers: &axum::http::HeaderMap,
+    require_download: bool,
+) -> ResponseResult<()> {
+    let store = load_instance_store(config).await?;
+    let instance = store
+        .instances
+        .get(instance_id)
+        .ok_or_else(|| AppError::FileNotFound("Instance not found".to_string()))?;
+
+    if !instance.access_enabled {
+        return Err(AppError::Forbidden(
+            "Esta instancia está desactivada por el administrador".to_string(),
+        ));
+    }
+    if require_download && !instance.download_enabled {
+        return Err(AppError::Forbidden(
+            "La descarga de esta instancia está desactivada".to_string(),
+        ));
+    }
+
+    if instance.is_public {
+        return Ok(());
+    }
+
+    require_instance_code(config, instance_id, headers).await
+}
+
 async fn require_instance_code(
     config: &Config,
     instance_id: &str,
@@ -1258,6 +1526,33 @@ async fn require_instance_code(
     } else {
         Err(AppError::Forbidden("Invalid instance code".to_string()))
     }
+}
+
+async fn is_admin_caller(headers: &axum::http::HeaderMap, config: &Config) -> bool {
+    matches!(
+        crate::auth::verify_admin_request(headers, config).await,
+        Ok(true)
+    ) || matches!(crate::auth::verify_admin_auth(headers, config), Ok(true))
+}
+
+async fn load_main_pack_config(config: &Config) -> ResponseResult<MainPackConfig> {
+    let path = main_pack_config_path(config);
+    if !path.exists() {
+        return Ok(MainPackConfig::default());
+    }
+    let content = fs::read_to_string(path).await.map_err(AppError::FileIo)?;
+    Ok(serde_json::from_str(&content).unwrap_or_default())
+}
+
+async fn save_main_pack_config(config: &Config, store: &MainPackConfig) -> ResponseResult<()> {
+    fs::create_dir_all(&config.storage.directory)
+        .await
+        .map_err(AppError::FileIo)?;
+    crate::sessions::atomic_write_json(&main_pack_config_path(config), store).await
+}
+
+fn main_pack_config_path(config: &Config) -> PathBuf {
+    config.storage.directory.join("main_pack.json")
 }
 
 fn instance_store_lock() -> &'static tokio::sync::Mutex<()> {
@@ -2228,10 +2523,6 @@ mod tests {
     }
 }
 
-// =============================================================================
-// Maintenance mode (whitelist + premium-only toggle)
-// =============================================================================
-
 const MAINTENANCE_DEFAULT_MESSAGE: &str = "Membership to instances is restricted at this moment. \
     If you are anticipating participation in an event, kindly provide your Minecraft username to \
     the event organizer via the appropriate Discord channel.";
@@ -2328,8 +2619,6 @@ fn normalize_nick(raw: &str) -> Option<String> {
     Some(lower)
 }
 
-// ----- Public endpoints -----
-
 pub async fn get_maintenance_status(
     State(config): State<Arc<Config>>,
 ) -> ResponseResult<Json<MaintenanceStatusPublic>> {
@@ -2396,8 +2685,6 @@ pub async fn check_maintenance(
         reason: Some(store.message.clone()),
     }))
 }
-
-// ----- Admin endpoints -----
 
 pub async fn toggle_maintenance(
     State(config): State<Arc<Config>>,
@@ -2478,8 +2765,6 @@ pub async fn remove_whitelist_entry(
     }
     Ok(Json(MaintenanceStatusPublic::from(&store)))
 }
-
-// ----- SSE live updates -----
 
 pub async fn maintenance_stream(
     State(config): State<Arc<Config>>,

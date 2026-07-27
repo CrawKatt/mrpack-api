@@ -3,11 +3,11 @@ import { session } from "../../lib/api";
 
 export function useAuth() {
   const isAuthenticated = session.isAuthenticated();
-  const credentials = session.getCredentials();
+  const token = session.getToken();
 
   const logout = useCallback(() => {
-    session.logout();
+    void session.logout();
   }, []);
 
-  return { isAuthenticated, credentials, logout };
+  return { isAuthenticated, token, logout };
 }

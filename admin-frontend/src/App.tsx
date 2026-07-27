@@ -10,6 +10,7 @@ import { UploadSection } from "./features/upload/UploadSection";
 import { InstancesSection } from "./features/instances/InstancesSection";
 import { MaintenanceSection } from "./features/maintenance/MaintenanceSection";
 import { ApiLinksSection } from "./features/apiLinks/ApiLinksSection";
+import { CrashesSection } from "./features/crashes/CrashesSection";
 import { queryClient } from "./lib/queryClient";
 
 function AdminPanel() {
@@ -29,6 +30,7 @@ function AdminPanel() {
             </aside>
           </div>
         ) : null}
+        {view === "crashes" ? <CrashesSection /> : null}
         {view === "maintenance" ? <MaintenanceSection /> : null}
         {view === "api" ? <ApiLinksSection /> : null}
       </AppShell>

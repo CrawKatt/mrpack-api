@@ -24,6 +24,7 @@ import {
   useDeleteInstance,
   useGenerateCode,
   useInstances,
+  useUpdateInstance,
   useUploadInstanceMedia,
   useUploadInstanceModpack,
 } from "./useInstances";
@@ -33,6 +34,7 @@ import { CreateInstanceForm } from "./CreateInstanceForm";
 import { StatusBadge } from "../../components/StatusBadge";
 import { EmptyState } from "../../components/EmptyState";
 import { Spinner } from "../../components/Spinner";
+import { Switch } from "../../components/Switch";
 import type { AdminInstanceView } from "../../types/api";
 
 const MRPACK_EXT = [".mrpack"];
@@ -49,12 +51,36 @@ export function InstanceCard({ instance }: { instance: AdminInstanceView }) {
   const uploadMedia = useUploadInstanceMedia();
   const generateCodeMutation = useGenerateCode();
   const deleteInstanceMutation = useDeleteInstance();
+  const updateInstance = useUpdateInstance();
 
   const modpackAvailable = instance.modpack?.available === true;
   const summary = instance.modpack?.modpack_info;
   const summaryText = summary
     ? `${summary.version_id} · MC ${summary.minecraft_version} · ${summary.loader}`
     : t.instances.summaryMissing;
+
+  const isPublic = instance.isPublic ?? instance.is_public ?? false;
+  const downloadEnabled = instance.downloadEnabled ?? instance.download_enabled ?? true;
+  const accessEnabled = instance.accessEnabled ?? instance.access_enabled ?? true;
+  const isMain = instance.isMain ?? instance.is_main ?? false;
+  const whitelistCount = instance.whitelistCount ?? instance.whitelist_count ?? 0;
+
+  const toggleFlag = (
+    patch: {
+      isPublic?: boolean;
+      downloadEnabled?: boolean;
+      accessEnabled?: boolean;
+      isMain?: boolean;
+    },
+  ) => {
+    updateInstance.mutate(
+      { id: instance.id, ...patch },
+      {
+        onSuccess: () => showAlert(t.instances.flagsUpdated, "success"),
+        onError: (error: Error) => showAlert(error.message, "error"),
+      },
+    );
+  };
 
   const pickFile = (accept: string, onPick: (file: File) => void) => {
     const input = document.createElement("input");
@@ -138,7 +164,19 @@ export function InstanceCard({ instance }: { instance: AdminInstanceView }) {
       <div className="p-4">
         <header className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h3 className="truncate text-base font-semibold text-gray-950">{instance.name}</h3>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="truncate text-base font-semibold text-gray-950">{instance.name}</h3>
+              {isMain ? (
+                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-700">
+                  {t.instances.mainBadge}
+                </span>
+              ) : null}
+              {!accessEnabled ? (
+                <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-red-700">
+                  {t.instances.disabledBadge}
+                </span>
+              ) : null}
+            </div>
             <p className="mt-1 truncate font-mono text-[11px] text-gray-400">{instance.id}</p>
           </div>
           <StatusBadge
@@ -150,8 +188,42 @@ export function InstanceCard({ instance }: { instance: AdminInstanceView }) {
 
         <p className="mt-4 min-h-10 text-xs leading-5 text-gray-500">{summaryText}</p>
 
+        <div className="mt-4 space-y-3 rounded-md border border-gray-100 bg-gray-50 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+            {t.instances.accessControls}
+          </p>
+          <Switch
+            size="sm"
+            label={t.instances.flagAccess}
+            checked={accessEnabled}
+            disabled={updateInstance.isPending}
+            onCheckedChange={(checked) => toggleFlag({ accessEnabled: checked })}
+          />
+          <Switch
+            size="sm"
+            label={t.instances.flagDownload}
+            checked={downloadEnabled}
+            disabled={updateInstance.isPending || !accessEnabled}
+            onCheckedChange={(checked) => toggleFlag({ downloadEnabled: checked })}
+          />
+          <Switch
+            size="sm"
+            label={t.instances.flagPublic}
+            checked={isPublic}
+            disabled={updateInstance.isPending || !accessEnabled}
+            onCheckedChange={(checked) => toggleFlag({ isPublic: checked })}
+          />
+          <Switch
+            size="sm"
+            label={t.instances.flagMain}
+            checked={isMain}
+            disabled={updateInstance.isPending}
+            onCheckedChange={(checked) => toggleFlag({ isMain: checked })}
+          />
+        </div>
+
         <div className="mt-4 grid grid-cols-3 divide-x divide-gray-100 border-y border-gray-100 py-3">
-          <CompactStat icon={Users} value={instance.whitelist_count} label={t.instances.whitelist} />
+          <CompactStat icon={Users} value={whitelistCount} label={t.instances.whitelist} />
           <CompactStat icon={KeyRound} value={instance.codes.length} label={t.instances.codesLabel} />
           <CompactStat icon={FileArchive} value={summary?.mod_count ?? 0} label={t.dashboard.mods} />
         </div>

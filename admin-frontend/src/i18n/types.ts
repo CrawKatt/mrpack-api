@@ -17,6 +17,7 @@ export interface Dict {
       dashboard: string;
       instances: string;
       modpack: string;
+      crashes: string;
       maintenance: string;
       api: string;
     };
@@ -42,6 +43,7 @@ export interface Dict {
     mods: string;
     upload: string;
     instances: string;
+    crashes: string;
     maintenance: string;
     apiLinks: string;
   };
@@ -78,6 +80,10 @@ export interface Dict {
     delete: string;
     deleteConfirm: string;
     noDetails: string;
+    accessHeading: string;
+    accessEnabled: string;
+    downloadEnabled: string;
+    accessSaved: string;
     details: {
       name: string;
       version: string;
@@ -139,6 +145,14 @@ export interface Dict {
     summaryMissing: string;
     mediaConfigured: string;
     mediaMissing: string;
+    accessControls: string;
+    flagAccess: string;
+    flagDownload: string;
+    flagPublic: string;
+    flagMain: string;
+    mainBadge: string;
+    disabledBadge: string;
+    flagsUpdated: string;
     actions: {
       uploadMrpack: string;
       uploadIcon: string;
@@ -154,6 +168,23 @@ export interface Dict {
       copy: string;
       copied: (code: string) => string;
     };
+  };
+  crashes: {
+    eyebrow: string;
+    heading: string;
+    description: string;
+    searchPlaceholder: string;
+    emptyTitle: string;
+    emptyDescription: string;
+    colWhen: string;
+    colUser: string;
+    colKind: string;
+    colSummary: string;
+    colSize: string;
+    open: string;
+    detailTitle: string;
+    deleteConfirm: string;
+    deleted: string;
   };
   apiLinks: {
     heading: string;

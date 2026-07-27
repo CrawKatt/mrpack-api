@@ -2,11 +2,15 @@ import type {
   AdminInstanceView,
   AdminInstancesResponse,
   ApiResponse,
+  CrashReportDetail,
+  CrashReportListResponse,
   CreateInstancePayload,
   GenerateCodePayload,
   InstanceCodeResponse,
+  MainPackConfig,
   MaintenanceStatus,
   ModpackDetails,
+  UpdateInstancePayload,
   UploadFileResponse,
 } from "../types/api";
 
@@ -14,23 +18,33 @@ const SESSION_KEY = "mrpack_auth_session";
 const LOGIN_URL = "/login.html";
 
 export const session = {
-  getCredentials(): string | null {
-    return sessionStorage.getItem(SESSION_KEY);
+  getToken(): string | null {
+    return sessionStorage.getItem(SESSION_KEY) || localStorage.getItem(SESSION_KEY);
   },
   isAuthenticated(): boolean {
-    return this.getCredentials() !== null;
+    return this.getToken() !== null;
   },
   redirectToLogin(): void {
     window.location.replace(LOGIN_URL);
   },
-  logout(): void {
+  async logout(): Promise<void> {
+    const token = this.getToken();
+    if (token) {
+      try {
+        await fetch("/api/logout", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } catch {
+      }
+    }
     sessionStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(SESSION_KEY);
     this.redirectToLogin();
   },
   getAuthHeader(): Record<string, string> {
-    const credentials = this.getCredentials();
-    return credentials ? { Authorization: `Basic ${credentials}` } : {};
+    const token = this.getToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
   },
 };
 
@@ -179,17 +193,62 @@ export const api = {
     name: string,
     iconUrl: string | null,
     backgroundUrl: string | null,
+    options?: { isPublic?: boolean; isMain?: boolean },
   ): Promise<AdminInstanceView> {
-    const payload: CreateInstancePayload = { name, iconUrl, backgroundUrl };
+    const payload: CreateInstancePayload = {
+      name,
+      iconUrl,
+      backgroundUrl,
+      isPublic: options?.isPublic,
+      isMain: options?.isMain,
+    };
     return request<AdminInstanceView>("/api/admin/instances", {
       method: "POST",
       body: JSON.stringify(payload),
     });
   },
 
+  updateInstance(
+    instanceId: string,
+    payload: UpdateInstancePayload,
+  ): Promise<AdminInstanceView> {
+    return request<AdminInstanceView>(
+      `/api/admin/instances/${encodeURIComponent(instanceId)}`,
+      { method: "PATCH", body: JSON.stringify(payload) },
+    );
+  },
+
   deleteInstance(instanceId: string): Promise<ApiResponse> {
     return request<ApiResponse>(
       `/api/admin/instances/${encodeURIComponent(instanceId)}`,
+      { method: "DELETE" },
+    );
+  },
+
+  getMainPackConfig(): Promise<MainPackConfig> {
+    return request<MainPackConfig>("/api/admin/main-pack");
+  },
+
+  updateMainPackConfig(payload: MainPackConfig): Promise<MainPackConfig> {
+    return request<MainPackConfig>("/api/admin/main-pack", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  listCrashReports(): Promise<CrashReportListResponse> {
+    return request<CrashReportListResponse>("/api/admin/crash-reports");
+  },
+
+  getCrashReport(id: string): Promise<CrashReportDetail> {
+    return request<CrashReportDetail>(
+      `/api/admin/crash-reports/${encodeURIComponent(id)}`,
+    );
+  },
+
+  deleteCrashReport(id: string): Promise<ApiResponse> {
+    return request<ApiResponse>(
+      `/api/admin/crash-reports/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     );
   },

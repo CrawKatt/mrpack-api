@@ -1,4 +1,3 @@
-use axum::http::header;
 use axum::{
     Json,
     http::StatusCode,
@@ -47,9 +46,11 @@ pub enum AppError {
 
     #[error("Bad request: {0}")]
     BadRequest(String),
+
+    #[error("Too many requests: try again in {0} seconds")]
+    TooManyRequests(u64),
 }
 
-/// Error response body sent to clients
 #[derive(Serialize)]
 struct ErrorResponse {
     success: bool,
@@ -112,8 +113,7 @@ impl IntoResponse for AppError {
                 tracing::warn!("Unauthorized access attempt {self}");
                 return (
                     StatusCode::UNAUTHORIZED,
-                    [(header::WWW_AUTHENTICATE, "Basic realm=\"Admin Panel\", charset=\"UTF-8\"")],
-                    Json(ErrorResponse::new("Unauthorized - Invalid or missing credentials"))
+                    Json(ErrorResponse::new("Unauthorized - Invalid or missing credentials")),
                 ).into_response();
             },
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone(), true),
@@ -129,6 +129,11 @@ impl IntoResponse for AppError {
                 true,
             ),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone(), false),
+            AppError::TooManyRequests(secs) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                format!("Too many requests. Try again in {secs} seconds"),
+                true,
+            ),
             AppError::Internal(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "An internal server error occurred".to_string(),
@@ -136,7 +141,6 @@ impl IntoResponse for AppError {
             ),
         };
 
-        // Log detailed error for internal/auth errors
         if should_log_details {
             tracing::error!("Error: {self}");
         } else {
@@ -147,7 +151,6 @@ impl IntoResponse for AppError {
     }
 }
 
-// Convenience conversions
 impl From<anyhow::Error> for AppError {
     fn from(err: anyhow::Error) -> Self {
         AppError::Internal(err.to_string())
@@ -182,8 +185,8 @@ mod tests {
     #[test]
     fn test_file_too_large_error() {
         let why = AppError::FileTooLarge {
-            size: 1024 * 1024 * 600, // 600 MB
-            max: 1024 * 1024 * 500,  // 500 MB
+            size: 1024 * 1024 * 600,
+            max: 1024 * 1024 * 500,
         };
         let display = format!("{why}");
         assert!(display.contains("exceeds limit"));

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, PackageOpen, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../../lib/api";
 import { useAlert } from "../../components/Alert";
@@ -8,6 +8,7 @@ import { useI18n } from "../../i18n/useI18n";
 import { Button } from "../../components/Button";
 import { StatusBadge } from "../../components/StatusBadge";
 import { Spinner } from "../../components/Spinner";
+import { Switch } from "../../components/Switch";
 import { formatBytes } from "../../lib/formatBytes";
 import { modpackKeys, useModpack } from "./useModpack";
 import { ModList } from "./ModList";
@@ -19,6 +20,21 @@ export function ModpackSection() {
   const queryClient = useQueryClient();
   const { data, isLoading, isError, error, refetch, isFetching } = useModpack();
   const [downloading, setDownloading] = useState(false);
+
+  const mainPackQuery = useQuery({
+    queryKey: ["main-pack-config"],
+    queryFn: () => api.getMainPackConfig(),
+  });
+
+  const mainPackMutation = useMutation({
+    mutationFn: api.updateMainPackConfig,
+    onSuccess: () => {
+      showAlert(t.modpack.accessSaved, "success");
+      void queryClient.invalidateQueries({ queryKey: ["main-pack-config"] });
+      void queryClient.invalidateQueries({ queryKey: modpackKeys.info() });
+    },
+    onError: (mutationError: Error) => showAlert(mutationError.message, "error"),
+  });
 
   const downloadMutation = useMutation({
     mutationFn: () => api.downloadFile(),
@@ -45,11 +61,66 @@ export function ModpackSection() {
     if (await confirm(t.modpack.deleteConfirm)) deleteMutation.mutate();
   };
 
-  if (isLoading) return <StatePanel><Spinner /> {t.common.loading}</StatePanel>;
-  if (isError) return <StatePanel error>{error instanceof Error ? error.message : t.errors.generic}</StatePanel>;
-
   const available = data?.available === true;
   const info = data?.modpack_info;
+  const accessEnabled = mainPackQuery.data?.accessEnabled !== false;
+  const downloadEnabled = mainPackQuery.data?.downloadEnabled !== false;
+
+  const patchMainPack = (patch: { accessEnabled?: boolean; downloadEnabled?: boolean }) => {
+    const current = mainPackQuery.data ?? {
+      accessEnabled: true,
+      downloadEnabled: true,
+    };
+    mainPackMutation.mutate({ ...current, ...patch });
+  };
+
+  // Access controls must remain usable even if /api/info fails (e.g. pack disabled for launchers).
+  const accessControls = (
+    <div className="space-y-3 border-b border-gray-100 bg-gray-50 px-5 py-4">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+        {t.modpack.accessHeading}
+      </p>
+      <Switch
+        size="sm"
+        label={t.modpack.accessEnabled}
+        checked={accessEnabled}
+        disabled={mainPackMutation.isPending || mainPackQuery.isLoading}
+        onCheckedChange={(checked) => patchMainPack({ accessEnabled: checked })}
+      />
+      <Switch
+        size="sm"
+        label={t.modpack.downloadEnabled}
+        checked={downloadEnabled}
+        disabled={mainPackMutation.isPending || mainPackQuery.isLoading || !accessEnabled}
+        onCheckedChange={(checked) => patchMainPack({ downloadEnabled: checked })}
+      />
+      {!accessEnabled ? (
+        <p className="text-xs text-amber-700">
+          Acceso desactivado para el launcher. El panel admin sigue teniendo control total.
+        </p>
+      ) : null}
+    </div>
+  );
+
+  if (isLoading) {
+    return (
+      <section className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+        {accessControls}
+        <StatePanel><Spinner /> {t.common.loading}</StatePanel>
+      </section>
+    );
+  }
+
+  if (isError) {
+    return (
+      <section className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+        {accessControls}
+        <StatePanel error>
+          {error instanceof Error ? error.message : t.errors.generic}
+        </StatePanel>
+      </section>
+    );
+  }
 
   return (
     <section className="overflow-hidden rounded-lg border border-gray-200 bg-white">
@@ -61,7 +132,7 @@ export function ModpackSection() {
           <div>
             <h2 className="font-semibold text-gray-950">{t.modpack.heading}</h2>
             <p className="mt-0.5 max-w-md truncate text-xs text-gray-500">
-              {available ? data.file_name : t.modpack.noDetails}
+              {available ? data?.file_name : t.modpack.noDetails}
             </p>
           </div>
         </div>
@@ -71,6 +142,8 @@ export function ModpackSection() {
           unavailableText={t.modpack.statusUnavailable}
         />
       </header>
+
+      {accessControls}
 
       {available && info ? (
         <>

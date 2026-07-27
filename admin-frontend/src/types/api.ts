@@ -45,7 +45,16 @@ export interface InstanceMedia {
 export interface AdminInstanceView {
   id: string;
   name: string;
-  whitelist_count: number;
+  isPublic?: boolean;
+  downloadEnabled?: boolean;
+  accessEnabled?: boolean;
+  isMain?: boolean;
+  is_public?: boolean;
+  download_enabled?: boolean;
+  access_enabled?: boolean;
+  is_main?: boolean;
+  whitelist_count?: number;
+  whitelistCount?: number;
   codes: InstanceCode[];
   modpack: ModpackDetails;
   media: InstanceMedia;
@@ -59,6 +68,42 @@ export interface CreateInstancePayload {
   name: string;
   iconUrl?: string | null;
   backgroundUrl?: string | null;
+  isPublic?: boolean;
+  isMain?: boolean;
+}
+
+export interface UpdateInstancePayload {
+  name?: string;
+  isPublic?: boolean;
+  downloadEnabled?: boolean;
+  accessEnabled?: boolean;
+  isMain?: boolean;
+}
+
+export interface MainPackConfig {
+  accessEnabled: boolean;
+  downloadEnabled: boolean;
+}
+
+export interface CrashReportMeta {
+  id: string;
+  createdAt: number;
+  username?: string | null;
+  launcherVersion?: string | null;
+  os?: string | null;
+  instanceId?: string | null;
+  instanceName?: string | null;
+  kind: string;
+  summary: string;
+  sizeBytes: number;
+}
+
+export interface CrashReportListResponse {
+  reports: CrashReportMeta[];
+}
+
+export interface CrashReportDetail extends CrashReportMeta {
+  log: string;
 }
 
 export interface GenerateCodePayload {

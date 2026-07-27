@@ -40,25 +40,17 @@ class AuthManager {
         this.sessionKey = 'mrpack_auth_session';
     }
 
-    /**
-     * Store authentication credentials in session
-     */
-    storeCredentials(username, password, remember) {
-        const credentials = btoa(`${username}:${password}`);
-        sessionStorage.setItem(this.sessionKey, credentials);
-        localStorage.removeItem(this.sessionKey);
+    storeSessionToken(token, remember) {
+        const storage = remember ? localStorage : sessionStorage;
+        const other = remember ? sessionStorage : localStorage;
+        storage.setItem(this.sessionKey, token);
+        other.removeItem(this.sessionKey);
     }
 
-    /**
-     * Get stored credentials
-     */
-    getCredentials() {
-        return sessionStorage.getItem(this.sessionKey);
+    getToken() {
+        return sessionStorage.getItem(this.sessionKey) || localStorage.getItem(this.sessionKey);
     }
 
-    /**
-     * Clear stored credentials
-     */
     clearCredentials() {
         sessionStorage.removeItem(this.sessionKey);
         localStorage.removeItem(this.sessionKey);
@@ -68,15 +60,14 @@ class AuthManager {
      * Check if user is already authenticated
      */
     isAuthenticated() {
-        return this.getCredentials() !== null;
+        return this.getToken() !== null;
     }
 
     /**
-     * Verify credentials with the API
+     * Login and obtain a server session token
      */
-    async verifyCredentials(username, password) {
+    async login(username, password, remember) {
         try {
-            // Use dedicated login endpoint (no Basic Auth, no browser dialog)
             const response = await fetch(API_CONFIG.endpoints.login, {
                 method: 'POST',
                 headers: {
@@ -84,34 +75,56 @@ class AuthManager {
                 },
                 body: JSON.stringify({
                     username: username,
-                    password: password
+                    password: password,
+                    remember: !!remember
                 })
             });
 
+            if (response.status === 429) {
+                return { ok: false, rateLimited: true };
+            }
+
             if (!response.ok) {
                 console.error('Login request failed:', response.status);
-                return false;
+                return { ok: false };
             }
 
             const data = await response.json();
-            return data.success === true;
+            if (data.success === true && data.token) {
+                return { ok: true, token: data.token, expiresAt: data.expiresAt };
+            }
+            return { ok: false };
         } catch (error) {
             console.error('Verification error:', error);
+            return { ok: false };
+        }
+    }
+
+    /**
+     * Validate an existing session token against a protected endpoint
+     */
+    async validateSession(token) {
+        try {
+            const response = await fetch('/api/admin/main-pack', {
+                headers: {
+                    Authorization: `Bearer ${token}`
+                }
+            });
+            return response.ok;
+        } catch (error) {
+            console.error('Session validation error:', error);
             return false;
         }
     }
 }
 
-// ============================================================================
-// Rate Limiter (Protection against brute force attacks)
-// ============================================================================
 
 class RateLimiter {
     constructor() {
         this.storageKey = 'mrpack_login_attempts';
         this.maxAttempts = 5;
-        this.lockoutDuration = 15 * 60 * 1000; // 15 minutes
-        this.baseDelay = 1000; // 1 second base delay
+        this.lockoutDuration = 15 * 60 * 1000;
+        this.baseDelay = 1000;
     }
 
     /**
@@ -414,39 +427,32 @@ class LoginApp {
      * Check if user already has a valid session
      */
     async checkExistingSession() {
-        if (this.authManager.isAuthenticated()) {
-            // Show verifying message
-            this.uiManager.showAlert('Verificando sesión existente...', 'info');
-            this.uiManager.setButtonLoading(true);
-            
-            // Try to verify the stored credentials are still valid
-            const credentials = this.authManager.getCredentials();
-            
-            // Decode and verify
-            try {
-                const decoded = atob(credentials);
-                const [username, password] = decoded.split(':');
-                
-                const valid = await this.authManager.verifyCredentials(username, password);
-                
-                if (valid) {
-                    this.uiManager.showAlert('Sesión válida, redirigiendo...', 'success');
-                    setTimeout(() => {
-                        this.redirectToAdmin();
-                    }, 500);
-                } else {
-                    // Invalid credentials, clear them
-                    this.authManager.clearCredentials();
-                    this.uiManager.clearAlerts();
-                    this.uiManager.setButtonLoading(false);
-                }
-            } catch (error) {
-                // Invalid stored credentials
-                console.error('Session validation error:', error);
+        if (!this.authManager.isAuthenticated()) {
+            return;
+        }
+
+        this.uiManager.showAlert('Verificando sesión existente...', 'info');
+        this.uiManager.setButtonLoading(true);
+
+        try {
+            const token = this.authManager.getToken();
+            const valid = await this.authManager.validateSession(token);
+
+            if (valid) {
+                this.uiManager.showAlert('Sesión válida, redirigiendo...', 'success');
+                setTimeout(() => {
+                    this.redirectToAdmin();
+                }, 500);
+            } else {
                 this.authManager.clearCredentials();
                 this.uiManager.clearAlerts();
                 this.uiManager.setButtonLoading(false);
             }
+        } catch (error) {
+            console.error('Session validation error:', error);
+            this.authManager.clearCredentials();
+            this.uiManager.clearAlerts();
+            this.uiManager.setButtonLoading(false);
         }
     }
 
@@ -493,24 +499,25 @@ class LoginApp {
         this.uiManager.setButtonLoading(true);
 
         try {
-            // Verify credentials
-            const isValid = await this.authManager.verifyCredentials(username, password);
+            const result = await this.authManager.login(username, password, remember);
 
-            if (isValid) {
-                // Reset rate limiting on successful login
+            if (result.ok) {
                 this.rateLimiter.reset();
-                
-                // Store credentials
-                this.authManager.storeCredentials(username, password, remember);
-                
-                // Show success message
+                this.authManager.storeSessionToken(result.token, remember);
                 this.uiManager.showAlert('¡Autenticación exitosa! Redirigiendo...', 'success');
-                
-                // Redirect after short delay
                 setTimeout(() => {
                     this.redirectToAdmin();
                 }, 1000);
             } else {
+                if (result.rateLimited) {
+                    this.uiManager.showAlert(
+                        'Demasiados intentos fallidos. Espera unos minutos e inténtalo de nuevo.',
+                        'error'
+                    );
+                    this.uiManager.setButtonLoading(false);
+                    return;
+                }
+
                 // Record failed attempt
                 const attemptData = this.rateLimiter.recordFailedAttempt();
                 const remaining = this.rateLimiter.getRemainingAttempts();

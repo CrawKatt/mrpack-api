@@ -6,6 +6,8 @@ const ENDPOINTS = [
   { method: "GET", path: "/api/maintenance/status", access: "public", icon: ShieldCheck },
   { method: "GET", path: "/api/maintenance/stream", access: "public", icon: Radio },
   { method: "GET", path: "/api/info", access: "protected", icon: Lock },
+  { method: "POST", path: "/api/crash-reports", access: "protected", icon: Lock },
+  { method: "GET", path: "/api/admin/crash-reports", access: "protected", icon: Lock },
 ] as const;
 
 export function ApiLinksSection() {

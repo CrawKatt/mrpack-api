@@ -1,7 +1,10 @@
 mod auth;
 mod config;
+mod crash_reports;
 mod error;
 mod handlers;
+mod rate_limit;
+mod sessions;
 mod utils;
 
 use anyhow::{Context, Result};
@@ -12,6 +15,7 @@ use axum::{
     middleware,
     routing::{delete, get, post},
 };
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
@@ -32,10 +36,15 @@ async fn main() -> Result<()> {
     let config = Config::from_env().context("Failed to load configuration")?;
     let config = Arc::new(config);
 
+    let _ = sessions::global_sessions(&config.storage.directory);
+
     log_startup_info(&config);
     tokio::fs::create_dir_all(&config.storage.directory)
         .await
         .context("Failed to create storage directory")?;
+    tokio::fs::create_dir_all(config.storage.directory.join("crash-reports"))
+        .await
+        .context("Failed to create crash-reports directory")?;
 
     let app = build_app(config.clone())?;
     let addr = config.socket_addr()?;
@@ -53,9 +62,12 @@ async fn main() -> Result<()> {
 
     tracing::info!("✅ Server is running and ready to accept connections");
 
-    axum::serve(listener, app.clone())
-        .await
-        .context("Server error")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .context("Server error")?;
 
     Ok(())
 }
@@ -90,6 +102,7 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
     let public_routes = Router::new()
         .route("/api/health", get(handlers::health_check))
         .route("/api/login", post(handlers::login))
+        .route("/api/logout", post(handlers::logout))
         .route(
             "/api/media/instances/{instance_id}/{slot}",
             get(handlers::serve_instance_media),
@@ -110,6 +123,7 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
             auth::maintenance_auth_middleware,
         ));
 
+    let crash_upload_limit = config.security.max_crash_report_bytes + 64 * 1024;
     let protected_launcher_routes = Router::new()
         .route("/api/info", get(handlers::info_modpack))
         .route("/api/download", get(handlers::download_modpack))
@@ -117,7 +131,14 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
         .route("/api/social/snapshot", get(handlers::social_snapshot))
         .route("/api/social/presence", post(handlers::update_social_presence))
         .route("/api/integrity/report", post(handlers::report_integrity))
-        .route("/api/instances/{instance_id}/info", get(handlers::info_instance_modpack))
+        .route(
+            "/api/crash-reports",
+            post(crash_reports::upload_crash_report).layer(DefaultBodyLimit::max(crash_upload_limit)),
+        )
+        .route(
+            "/api/instances/{instance_id}/info",
+            get(handlers::info_instance_modpack),
+        )
         .route(
             "/api/instances/{instance_id}/download",
             get(handlers::download_instance_modpack),
@@ -141,7 +162,10 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
         .route("/api/mods", delete(handlers::remove_mod))
         .route("/api/admin/instances", get(handlers::list_instances))
         .route("/api/admin/instances", post(handlers::create_instance))
-        .route("/api/admin/instances/{instance_id}", delete(handlers::delete_instance))
+        .route(
+            "/api/admin/instances/{instance_id}",
+            delete(handlers::delete_instance).patch(handlers::update_instance),
+        )
         .route(
             "/api/admin/instances/{instance_id}/codes",
             post(handlers::generate_instance_code),
@@ -186,6 +210,18 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
             "/api/admin/maintenance/whitelist/{nick}",
             delete(handlers::remove_whitelist_entry),
         )
+        .route(
+            "/api/admin/main-pack",
+            get(handlers::get_main_pack_config).post(handlers::update_main_pack_config),
+        )
+        .route(
+            "/api/admin/crash-reports",
+            get(crash_reports::list_crash_reports),
+        )
+        .route(
+            "/api/admin/crash-reports/{id}",
+            get(crash_reports::get_crash_report).delete(crash_reports::delete_crash_report),
+        )
         .layer(middleware::from_fn_with_state(
             config.clone(),
             auth::auth_middleware,
@@ -218,12 +254,29 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
             HeaderName::from_static("referrer-policy"),
             HeaderValue::from_static("no-referrer"),
         ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("permissions-policy"),
+            HeaderValue::from_static("geolocation=(), microphone=(), camera=()"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static(
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+            ),
+        ))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
         .with_state(config.clone());
+
+    if config.security.require_https {
+        app = app.layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        ));
+    }
 
     if let Some(cors_layer) = build_cors_layer(&config) {
         app = app.layer(cors_layer);
@@ -244,7 +297,13 @@ fn build_cors_layer(config: &Config) -> Option<CorsLayer> {
     };
 
     let layer = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::DELETE,
+            Method::PATCH,
+            Method::OPTIONS,
+        ])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     if config.allow_all_origins() {
@@ -286,7 +345,12 @@ fn log_startup_info(config: &Config) {
         "  Download token configured: {}",
         config.auth.download_token_hash.is_some()
     );
+    tracing::info!("  Allow Basic admin: {}", config.security.allow_basic_admin);
     tracing::info!("  Require HTTPS: {}", config.security.require_https);
+    tracing::info!(
+        "  Max crash report: {} bytes",
+        config.security.max_crash_report_bytes
+    );
     tracing_allowed_origins(config);
     tracing::info!("");
     tracing::info!("Environment:");
@@ -304,12 +368,6 @@ fn log_startup_info(config: &Config) {
         if config.security.allowed_origins.is_none() {
             tracing::warn!("⚠️  WARNING: CORS is disabled because ALLOWED_ORIGINS is not set");
         }
-
-        if config.auth.download_token_hash.is_none() {
-            tracing::warn!(
-                "⚠️  WARNING: DOWNLOAD_TOKEN_HASH is not set; launcher downloads must use admin Basic Auth"
-            );
-        }
     }
 }
 
@@ -320,5 +378,3 @@ fn tracing_allowed_origins(config: &Config) {
 
     tracing::info!("  Allowed origins: {:?}", origins);
 }
-
-

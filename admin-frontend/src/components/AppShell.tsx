@@ -2,6 +2,7 @@ import type { ComponentType, ReactNode } from "react";
 import {
   Activity,
   Boxes,
+  Bug,
   ChevronDown,
   CircleGauge,
   Code2,
@@ -18,7 +19,7 @@ import { useAuth } from "../features/auth/useAuth";
 import { useI18n } from "../i18n/useI18n";
 import { useConfirm } from "./Modal";
 
-export type AppView = "dashboard" | "instances" | "modpack" | "maintenance" | "api";
+export type AppView = "dashboard" | "instances" | "modpack" | "crashes" | "maintenance" | "api";
 
 interface Props {
   activeView: AppView;
@@ -35,6 +36,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "dashboard", icon: CircleGauge },
   { id: "instances", icon: Boxes },
   { id: "modpack", icon: PackageOpen },
+  { id: "crashes", icon: Bug },
   { id: "maintenance", icon: ShieldCheck },
   { id: "api", icon: Code2 },
 ];
@@ -49,6 +51,7 @@ export function AppShell({ activeView, onNavigate, children }: Props) {
     dashboard: t.nav.dashboard,
     instances: t.nav.instances,
     modpack: t.nav.modpack,
+    crashes: t.nav.crashes,
     maintenance: t.nav.maintenance,
     api: t.nav.apiLinks,
   };
@@ -56,6 +59,7 @@ export function AppShell({ activeView, onNavigate, children }: Props) {
     dashboard: t.app.viewDescriptions.dashboard,
     instances: t.app.viewDescriptions.instances,
     modpack: t.app.viewDescriptions.modpack,
+    crashes: t.app.viewDescriptions.crashes,
     maintenance: t.app.viewDescriptions.maintenance,
     api: t.app.viewDescriptions.api,
   };

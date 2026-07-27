@@ -36,12 +36,12 @@ pub struct StorageConfig {
 pub struct SecurityConfig {
     pub require_https: bool,
     pub allowed_origins: Option<Vec<String>>,
+    pub allow_basic_admin: bool,
+    pub max_crash_report_bytes: usize,
 }
 
 impl Config {
-    /// Load configuration from Shuttle SecretStore
     pub fn from_env() -> Result<Self> {
-        // Load .env file if it exists (for development)
         let _ = dotenvy::dotenv();
 
         let server = ServerConfig {
@@ -67,18 +67,15 @@ impl Config {
              4. Use SINGLE QUOTES to prevent shell variable expansion!",
         )?;
 
-        // Remove surrounding quotes (single or double) to handle shell escaping
         let password_hash = password_hash_raw
             .trim_matches('\'')
             .trim_matches('"')
             .to_string();
 
-        // Validate username
         if username.len() < 3 {
             anyhow::bail!("ADMIN_USERNAME must be at least 3 characters long");
         }
 
-        // Validate password hash format (Argon2 starts with $argon2)
         if !password_hash.starts_with("$argon2") {
             anyhow::bail!(
                 "ADMIN_PASSWORD_HASH is not a valid Argon2 hash.\n\
@@ -95,7 +92,6 @@ impl Config {
             );
         }
 
-        // Additional validation: Try to parse the hash
         if let Err(e) = PasswordHash::new(&password_hash) {
             anyhow::bail!(
                 "ADMIN_PASSWORD_HASH has an invalid format: {}\n\
@@ -133,6 +129,16 @@ impl Config {
             .parse()
             .context("REQUIRE_HTTPS must be true or false")?;
 
+        let allow_basic_admin = std::env::var("ALLOW_BASIC_ADMIN")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse()
+            .context("ALLOW_BASIC_ADMIN must be true or false")?;
+
+        let max_crash_report_bytes = std::env::var("MAX_CRASH_REPORT_BYTES")
+            .unwrap_or_else(|_| (2 * 1024 * 1024).to_string())
+            .parse()
+            .context("MAX_CRASH_REPORT_BYTES must be a valid number")?;
+
         let allowed_origins = std::env::var("ALLOWED_ORIGINS")
             .ok()
             .map(|origins| origins.split(',').map(|s| s.trim().to_string()).collect());
@@ -140,6 +146,8 @@ impl Config {
         let security = SecurityConfig {
             require_https,
             allowed_origins,
+            allow_basic_admin,
+            max_crash_report_bytes,
         };
 
         let config = Config {
@@ -149,20 +157,16 @@ impl Config {
             security,
         };
 
-        // Validate configuration
         config.validate()?;
 
         Ok(config)
     }
 
-    /// Validate the configuration for security issues
     fn validate(&self) -> Result<()> {
-        // Check if running in production mode
         let is_production =
             std::env::var("RUST_ENV").unwrap_or_default().to_lowercase() == "production";
 
         if is_production {
-            // In production, enforce security requirements
             if !self.security.require_https {
                 tracing::warn!(
                     "⚠️  SECURITY WARNING: REQUIRE_HTTPS is false in production. \
@@ -176,24 +180,40 @@ impl Config {
                      Cross-origin browser access will be disabled."
                 );
             }
+
+            if self.auth.download_token_hash.is_none() {
+                anyhow::bail!(
+                    "DOWNLOAD_TOKEN_HASH is required in production. \
+                     Generate one with: cargo run --bin hash_password \"LongRandomToken\""
+                );
+            }
+
+            if self.security.allow_basic_admin {
+                tracing::warn!(
+                    "⚠️  SECURITY WARNING: ALLOW_BASIC_ADMIN is true in production. \
+                     Prefer session tokens only."
+                );
+            }
         }
 
-        // Ensure storage directory is valid
+        if self.security.max_crash_report_bytes == 0
+            || self.security.max_crash_report_bytes > 20 * 1024 * 1024
+        {
+            anyhow::bail!("MAX_CRASH_REPORT_BYTES must be between 1 and 20971520 (20MB)");
+        }
+
         if self.storage.directory.as_os_str().is_empty() {
             anyhow::bail!("STORAGE_DIR cannot be empty");
         }
 
-        // Validate max file size
         if self.storage.max_file_size_mb == 0 || self.storage.max_file_size_mb > 10240 {
             anyhow::bail!("MAX_FILE_SIZE_MB must be between 1 and 10240 (10GB)");
         }
 
-        // Validate username length
         if self.auth.username.len() < 4 {
             anyhow::bail!("USERNAME must be at least 4 characters long");
         }
 
-        // Validate password hash length
         if self.auth.password_hash.len() < 64 {
             anyhow::bail!("PASSWORD_HASH must be at least 64 characters long");
         }
@@ -201,14 +221,12 @@ impl Config {
         Ok(())
     }
 
-    /// Get the socket address for the server
     pub fn socket_addr(&self) -> Result<SocketAddr> {
         let addr = format!("{}:{}", self.server.host, self.server.port);
         addr.parse()
             .context("Failed to parse socket address from host and port")
     }
 
-    /// Check if CORS should allow all origins
     pub fn allow_all_origins(&self) -> bool {
         self.security
             .allowed_origins
@@ -260,6 +278,8 @@ mod tests {
             security: SecurityConfig {
                 require_https: false,
                 allowed_origins: None,
+                allow_basic_admin: false,
+                max_crash_report_bytes: 2 * 1024 * 1024,
             },
         };
 
@@ -275,7 +295,7 @@ mod tests {
                 port: 8080,
             },
             auth: AuthConfig {
-                username: "ab".to_string(), // Too short
+                username: "ab".to_string(),
                 password_hash: "$argon2id$v=19$m=19456,t=2,p=1$...".to_string(),
                 download_token_hash: None,
                 maintenance_token_hash: None,
@@ -287,10 +307,11 @@ mod tests {
             security: SecurityConfig {
                 require_https: false,
                 allowed_origins: None,
+                allow_basic_admin: false,
+                max_crash_report_bytes: 2 * 1024 * 1024,
             },
         };
 
-        // This should fail due to short username
         let result = config.validate();
         assert!(result.is_err());
     }

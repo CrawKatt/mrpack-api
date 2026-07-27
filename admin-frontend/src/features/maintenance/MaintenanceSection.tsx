@@ -5,6 +5,7 @@ import { Button } from "../../components/Button";
 import { Input } from "../../components/Input";
 import { useConfirm } from "../../components/Modal";
 import { Spinner } from "../../components/Spinner";
+import { Switch } from "../../components/Switch";
 import { useI18n } from "../../i18n/useI18n";
 import {
   useAddWhitelistEntry,
@@ -129,22 +130,14 @@ export function MaintenanceSection() {
             <p className="mt-1 max-w-2xl text-sm text-gray-600">{t.maintenance.toggleHint}</p>
           </div>
         </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={enabled}
-          onClick={handleToggle}
+        <Switch
+          size="md"
+          tone="amber"
+          checked={enabled}
+          onCheckedChange={() => handleToggle()}
           disabled={toggleMutation.isPending || addMutation.isPending}
-          className={[
-            "relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50",
-            enabled ? "bg-amber-500" : "bg-gray-300",
-          ].join(" ")}
-        >
-          <span className={[
-            "absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform",
-            enabled ? "translate-x-5" : "translate-x-0",
-          ].join(" ")} />
-        </button>
+          aria-label={enabled ? t.maintenance.enabled : t.maintenance.disabled}
+        />
       </section>
 
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
@@ -154,18 +147,13 @@ export function MaintenanceSection() {
             <p className="mt-1 text-sm text-gray-500">{t.maintenance.description}</p>
           </header>
           <div className="space-y-6 p-5">
-            <label className="flex cursor-pointer items-start justify-between gap-5">
-              <span>
-                <span className="block text-sm font-semibold text-gray-800">{t.maintenance.premiumOnly}</span>
-                <span className="mt-1 block text-xs leading-5 text-gray-500">{t.maintenance.premiumOnlyHint}</span>
-              </span>
-              <input
-                type="checkbox"
-                checked={premiumOnly}
-                onChange={(event) => setPremiumOnly(event.target.checked)}
-                className="mt-1 h-4 w-4 accent-emerald-600"
-              />
-            </label>
+            <Switch
+              size="sm"
+              label={t.maintenance.premiumOnly}
+              description={t.maintenance.premiumOnlyHint}
+              checked={premiumOnly}
+              onCheckedChange={setPremiumOnly}
+            />
 
             <div>
               <label htmlFor="maintenance-message" className="text-sm font-semibold text-gray-800">
