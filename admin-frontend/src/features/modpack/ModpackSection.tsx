@@ -74,7 +74,6 @@ export function ModpackSection() {
     mainPackMutation.mutate({ ...current, ...patch });
   };
 
-  // Access controls must remain usable even if /api/info fails (e.g. pack disabled for launchers).
   const accessControls = (
     <div className="space-y-3 border-b border-gray-100 bg-gray-50 px-5 py-4">
       <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">

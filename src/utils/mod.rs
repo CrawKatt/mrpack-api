@@ -1,4 +1,3 @@
-/// Comparación constant-time para prevenir timing attacks
 pub fn constant_time_compare(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;

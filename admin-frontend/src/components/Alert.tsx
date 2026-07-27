@@ -34,7 +34,6 @@ const ICONS = {
   info: Info,
 } as const;
 
-/** Solid styles that are not rewritten by global dark-mode utility overrides. */
 const STYLES: Record<AlertVariant, { panel: string; icon: string; close: string }> = {
   success: {
     panel:

@@ -21,7 +21,6 @@ function readInitialLang(): Lang {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored === "es" || stored === "en") return stored;
   } catch {
-    // localStorage unavailable
   }
   return "es";
 }
@@ -38,7 +37,6 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     try {
       localStorage.setItem(STORAGE_KEY, next);
     } catch {
-      // ignore quota/permission errors
     }
   }, []);
 

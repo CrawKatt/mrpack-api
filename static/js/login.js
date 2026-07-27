@@ -1,13 +1,3 @@
-/**
- * Mrpack API - Login Page JavaScript
- * 
- * Handles authentication and redirects to admin panel
- */
-
-// ============================================================================
-// Configuration
-// ============================================================================
-
 const API_CONFIG = {
     endpoints: {
         info: '/api/info',
@@ -16,10 +6,6 @@ const API_CONFIG = {
     },
     adminPanelUrl: '/admin/'
 };
-
-// ============================================================================
-// DOM Elements
-// ============================================================================
 
 const elements = {
     loginForm: null,
@@ -30,10 +16,6 @@ const elements = {
     submitButton: null,
     alertContainer: null
 };
-
-// ============================================================================
-// Authentication Manager
-// ============================================================================
 
 class AuthManager {
     constructor() {
@@ -56,16 +38,10 @@ class AuthManager {
         localStorage.removeItem(this.sessionKey);
     }
 
-    /**
-     * Check if user is already authenticated
-     */
     isAuthenticated() {
         return this.getToken() !== null;
     }
 
-    /**
-     * Login and obtain a server session token
-     */
     async login(username, password, remember) {
         try {
             const response = await fetch(API_CONFIG.endpoints.login, {
@@ -100,9 +76,6 @@ class AuthManager {
         }
     }
 
-    /**
-     * Validate an existing session token against a protected endpoint
-     */
     async validateSession(token) {
         try {
             const response = await fetch('/api/admin/main-pack', {
@@ -118,7 +91,6 @@ class AuthManager {
     }
 }
 
-
 class RateLimiter {
     constructor() {
         this.storageKey = 'mrpack_login_attempts';
@@ -127,9 +99,6 @@ class RateLimiter {
         this.baseDelay = 1000;
     }
 
-    /**
-     * Get current attempt data
-     */
     getAttemptData() {
         const data = localStorage.getItem(this.storageKey);
         if (!data) {
@@ -138,16 +107,10 @@ class RateLimiter {
         return JSON.parse(data);
     }
 
-    /**
-     * Save attempt data
-     */
     saveAttemptData(data) {
         localStorage.setItem(this.storageKey, JSON.stringify(data));
     }
 
-    /**
-     * Check if currently locked out
-     */
     isLockedOut() {
         const data = this.getAttemptData();
         if (data.lockedUntil && Date.now() < data.lockedUntil) {
@@ -159,15 +122,11 @@ class RateLimiter {
         return { locked: false };
     }
 
-    /**
-     * Record a failed attempt
-     */
     recordFailedAttempt() {
         const data = this.getAttemptData();
         data.attempts += 1;
         data.lastAttempt = Date.now();
 
-        // Lock account after max attempts
         if (data.attempts >= this.maxAttempts) {
             data.lockedUntil = Date.now() + this.lockoutDuration;
         }
@@ -176,35 +135,21 @@ class RateLimiter {
         return data;
     }
 
-    /**
-     * Reset attempts after successful login
-     */
     reset() {
         localStorage.removeItem(this.storageKey);
     }
 
-    /**
-     * Get delay before next attempt (exponential backoff)
-     */
     getDelay() {
         const data = this.getAttemptData();
         if (data.attempts === 0) return 0;
-        
-        // Exponential backoff: 1s, 2s, 4s, 8s, 16s...
         return Math.min(this.baseDelay * Math.pow(2, data.attempts - 1), 30000);
     }
 
-    /**
-     * Get remaining attempts before lockout
-     */
     getRemainingAttempts() {
         const data = this.getAttemptData();
         return Math.max(0, this.maxAttempts - data.attempts);
     }
 
-    /**
-     * Format time remaining
-     */
     formatTime(ms) {
         const minutes = Math.floor(ms / 60000);
         const seconds = Math.floor((ms % 60000) / 1000);
@@ -212,41 +157,27 @@ class RateLimiter {
     }
 }
 
-// ============================================================================
-// UI Manager
-// ============================================================================
-
 class UIManager {
-    /**
-     * Show alert message
-     */
     showAlert(message, type = 'error') {
         const alert = document.createElement('div');
         alert.className = `alert alert-${type} show`;
-        
+
         const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️';
         alert.innerHTML = `<span>${icon}</span><span>${this.escapeHtml(message)}</span>`;
-        
+
         elements.alertContainer.innerHTML = '';
         elements.alertContainer.appendChild(alert);
 
-        // Auto-hide after 5 seconds
         setTimeout(() => {
             alert.classList.remove('show');
             setTimeout(() => alert.remove(), 300);
         }, 5000);
     }
 
-    /**
-     * Clear all alerts
-     */
     clearAlerts() {
         elements.alertContainer.innerHTML = '';
     }
 
-    /**
-     * Set loading state on button
-     */
     setButtonLoading(loading) {
         if (loading) {
             elements.submitButton.disabled = true;
@@ -257,20 +188,14 @@ class UIManager {
         }
     }
 
-    /**
-     * Toggle password visibility
-     */
     togglePasswordVisibility() {
         const type = elements.passwordInput.type === 'password' ? 'text' : 'password';
         elements.passwordInput.type = type;
-        
+
         const icon = type === 'password' ? '👁️' : '🙈';
         elements.passwordToggle.textContent = icon;
     }
 
-    /**
-     * Escape HTML to prevent XSS
-     */
     escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
@@ -278,25 +203,16 @@ class UIManager {
     }
 }
 
-// ============================================================================
-// Form Validator
-// ============================================================================
-
 class FormValidator {
-    /**
-     * Validate login form
-     */
     validate(username, password) {
         const errors = [];
 
-        // Username validation
         if (!username || username.trim().length === 0) {
             errors.push('El nombre de usuario es requerido');
         } else if (username.length < 3) {
             errors.push('El nombre de usuario debe tener al menos 3 caracteres');
         }
 
-        // Password validation
         if (!password || password.length === 0) {
             errors.push('La contraseña es requerida');
         } else if (password.length < 8) {
@@ -310,25 +226,17 @@ class FormValidator {
     }
 }
 
-// ============================================================================
-// Login Application
-// ============================================================================
-
 class LoginApp {
     constructor() {
         this.authManager = new AuthManager();
         this.uiManager = new UIManager();
         this.validator = new FormValidator();
         this.rateLimiter = new RateLimiter();
-        
+
         this.init();
     }
 
-    /**
-     * Initialize the application
-     */
     init() {
-        // Wait for DOM to be ready
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => this.setup());
         } else {
@@ -336,9 +244,6 @@ class LoginApp {
         }
     }
 
-    /**
-     * Setup the application
-     */
     setup() {
         this.initializeElements();
         this.setupEventListeners();
@@ -346,12 +251,9 @@ class LoginApp {
         this.checkExistingSession();
     }
 
-    /**
-     * Check if user is locked out
-     */
     checkLockoutStatus() {
         const lockout = this.rateLimiter.isLockedOut();
-        
+
         if (lockout.locked) {
             const timeRemaining = this.rateLimiter.formatTime(lockout.remainingTime);
             this.uiManager.showAlert(
@@ -360,17 +262,13 @@ class LoginApp {
             );
             this.uiManager.setButtonLoading(false);
             elements.submitButton.disabled = true;
-            
-            // Re-check after the lockout expires
+
             setTimeout(() => {
                 window.location.reload();
             }, lockout.remainingTime);
         }
     }
 
-    /**
-     * Initialize DOM element references
-     */
     initializeElements() {
         elements.loginForm = document.getElementById('loginForm');
         elements.usernameInput = document.getElementById('username');
@@ -380,7 +278,6 @@ class LoginApp {
         elements.submitButton = document.getElementById('submitButton');
         elements.alertContainer = document.getElementById('alertContainer');
 
-        // Verify all elements exist
         for (const [key, element] of Object.entries(elements)) {
             if (!element) {
                 console.error(`Element not found: ${key}`);
@@ -388,22 +285,16 @@ class LoginApp {
         }
     }
 
-    /**
-     * Setup event listeners
-     */
     setupEventListeners() {
-        // Form submission
         elements.loginForm?.addEventListener('submit', (e) => {
             e.preventDefault();
             this.handleLogin();
         });
 
-        // Password toggle
         elements.passwordToggle?.addEventListener('click', () => {
             this.uiManager.togglePasswordVisibility();
         });
 
-        // Clear error on input
         elements.usernameInput?.addEventListener('input', () => {
             this.uiManager.clearAlerts();
         });
@@ -412,7 +303,6 @@ class LoginApp {
             this.uiManager.clearAlerts();
         });
 
-        // Enter key on inputs
         [elements.usernameInput, elements.passwordInput].forEach(input => {
             input?.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
@@ -423,9 +313,6 @@ class LoginApp {
         });
     }
 
-    /**
-     * Check if user already has a valid session
-     */
     async checkExistingSession() {
         if (!this.authManager.isAuthenticated()) {
             return;
@@ -456,13 +343,9 @@ class LoginApp {
         }
     }
 
-    /**
-     * Handle login form submission
-     */
     async handleLogin() {
         this.uiManager.clearAlerts();
 
-        // Check if locked out
         const lockout = this.rateLimiter.isLockedOut();
         if (lockout.locked) {
             const timeRemaining = this.rateLimiter.formatTime(lockout.remainingTime);
@@ -473,19 +356,16 @@ class LoginApp {
             return;
         }
 
-        // Get form values
         const username = elements.usernameInput.value.trim();
         const password = elements.passwordInput.value;
         const remember = elements.rememberMe.checked;
 
-        // Validate
         const validation = this.validator.validate(username, password);
         if (!validation.valid) {
             this.uiManager.showAlert(validation.errors.join('. '), 'error');
             return;
         }
 
-        // Apply delay before attempting (rate limiting)
         const delay = this.rateLimiter.getDelay();
         if (delay > 0) {
             this.uiManager.showAlert(
@@ -495,7 +375,6 @@ class LoginApp {
             await new Promise(resolve => setTimeout(resolve, delay));
         }
 
-        // Show loading state
         this.uiManager.setButtonLoading(true);
 
         try {
@@ -518,11 +397,9 @@ class LoginApp {
                     return;
                 }
 
-                // Record failed attempt
                 const attemptData = this.rateLimiter.recordFailedAttempt();
                 const remaining = this.rateLimiter.getRemainingAttempts();
-                
-                // Check if now locked out
+
                 if (attemptData.lockedUntil) {
                     const lockoutTime = this.rateLimiter.formatTime(
                         attemptData.lockedUntil - Date.now()
@@ -532,13 +409,11 @@ class LoginApp {
                         'error'
                     );
                     elements.submitButton.disabled = true;
-                    
-                    // Reload page after lockout expires
+
                     setTimeout(() => {
                         window.location.reload();
                     }, attemptData.lockedUntil - Date.now());
                 } else if (remaining <= 2) {
-                    // Warn user when close to lockout
                     this.uiManager.showAlert(
                         `Credenciales incorrectas. ${remaining} intentos restantes antes del bloqueo`,
                         'error'
@@ -546,7 +421,7 @@ class LoginApp {
                 } else {
                     this.uiManager.showAlert('Credenciales incorrectas', 'error');
                 }
-                
+
                 this.uiManager.setButtonLoading(false);
             }
         } catch (error) {
@@ -556,17 +431,9 @@ class LoginApp {
         }
     }
 
-    /**
-     * Redirect to admin panel
-     */
     redirectToAdmin() {
         window.location.href = API_CONFIG.adminPanelUrl;
     }
 }
 
-// ============================================================================
-// Application Entry Point
-// ============================================================================
-
-// Initialize application
 new LoginApp();

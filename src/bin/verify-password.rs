@@ -9,7 +9,6 @@ fn main() {
     println!("This tool helps you verify if a password matches a hash.");
     println!();
 
-    // Get hash from command line or prompt
     let hash_string = if let Some(arg) = std::env::args().nth(1) {
         arg
     } else {
@@ -24,10 +23,9 @@ fn main() {
         input.trim().to_string()
     };
 
-    // Validate hash format
     println!();
     println!("Step 1: Validating hash format...");
-    
+
     if hash_string.is_empty() {
         eprintln!("ERROR: Hash cannot be empty");
         std::process::exit(1);
@@ -66,7 +64,6 @@ fn main() {
     println!();
     println!("Step 2: Testing password...");
 
-    // Get password to verify
     print!("Enter password to test: ");
     io::stdout().flush().unwrap();
 
@@ -86,7 +83,6 @@ fn main() {
     println!("Verifying...");
     println!();
 
-    // Verify password
     let argon2 = Argon2::default();
     match argon2.verify_password(password.as_bytes(), &password_hash) {
         Ok(_) => {

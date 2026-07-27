@@ -11,11 +11,9 @@ fn main() {
     println!("============================================================");
     println!();
 
-    // Get password from command line argument or prompt
     let password = if let Some(arg) = std::env::args().nth(1) {
         arg
     } else {
-        // Prompt for password
         print!("Enter password: ");
         io::stdout().flush().unwrap();
 
@@ -27,7 +25,6 @@ fn main() {
         password.trim().to_string()
     };
 
-    // Validate password
     if password.is_empty() {
         eprintln!("Error: Password cannot be empty");
         std::process::exit(1);
@@ -39,16 +36,13 @@ fn main() {
         println!();
     }
 
-    // Generate salt
     let salt = SaltString::generate(&mut OsRng);
 
-    // Hash the password
     let argon2 = Argon2::default();
     let password_hash = argon2
         .hash_password(password.as_bytes(), &salt)
         .expect("Failed to hash password");
 
-    // Output the hash
     println!("Password hash generated successfully!");
     println!();
     println!("Add this to your .env file:");

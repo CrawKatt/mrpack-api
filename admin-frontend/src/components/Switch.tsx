@@ -26,10 +26,6 @@ const toneOn: Record<"emerald" | "amber", string> = {
   amber: "bg-amber-500",
 };
 
-/**
- * Accessible toggle switch.
- * Uses flex start/end alignment so the thumb never overflows the track.
- */
 export function Switch({
   checked,
   onCheckedChange,
