@@ -158,9 +158,18 @@ export const en: Dict = {
       uploadIcon: "Upload icon",
       uploadBackground: "Upload background",
       generateCode: "Generate code",
+      editMods: "Edit mods",
       addJar: "Add .jar",
       delete: "Delete instance",
       deleteConfirm: (name) => `Delete instance "${name}"? This will erase its modpack, media, mods, and codes.`,
+    },
+    editor: {
+      title: (name) => `Mod editor: ${name}`,
+      searchMods: "Search mods by name, path, or source",
+      noMods: "No mods match the search.",
+      noModpackTitle: "This instance has no uploaded modpack",
+      modCount: (n) => `${n} ${n === 1 ? "mod" : "mods"}`,
+      removeConfirm: (name) => `Remove "${name}" from this instance?`,
     },
     code: {
       usesUnlimited: (n) => `${n} uses`,

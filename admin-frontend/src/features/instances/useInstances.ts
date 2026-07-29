@@ -107,3 +107,14 @@ export function useAddInstanceMod() {
     },
   });
 }
+
+export function useRemoveInstanceMod() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string; path: string }) =>
+      api.removeInstanceMod(input.id, input.path),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: instanceKeys.list() });
+    },
+  });
+}

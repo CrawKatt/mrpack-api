@@ -158,9 +158,18 @@ export const es: Dict = {
       uploadIcon: "Subir icono",
       uploadBackground: "Subir fondo",
       generateCode: "Generar código",
+      editMods: "Editar mods",
       addJar: "Añadir .jar",
       delete: "Eliminar instancia",
       deleteConfirm: (name) => `¿Eliminar la instancia "${name}"? Esta acción borrará su modpack, media, mods y códigos asociados.`,
+    },
+    editor: {
+      title: (name) => `Editor de mods: ${name}`,
+      searchMods: "Buscar mods por nombre, ruta u origen",
+      noMods: "No hay mods que coincidan con la búsqueda.",
+      noModpackTitle: "Esta instancia no tiene modpack cargado",
+      modCount: (n) => `${n} ${n === 1 ? "mod" : "mods"}`,
+      removeConfirm: (name) => `¿Quitar "${name}" de esta instancia?`,
     },
     code: {
       usesUnlimited: (n) => `${n} usos`,

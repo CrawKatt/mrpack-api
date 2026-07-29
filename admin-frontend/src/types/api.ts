@@ -123,6 +123,11 @@ export interface ApiResponse {
   message: string;
 }
 
+export interface ModEditResponse extends ApiResponse {
+  path: string;
+  modpack_info?: ModpackInfo | null;
+}
+
 export interface UploadFileResponse {
   file_name: string;
   file_size_mb: number;

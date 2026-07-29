@@ -158,9 +158,18 @@ export interface Dict {
       uploadIcon: string;
       uploadBackground: string;
       generateCode: string;
+      editMods: string;
       addJar: string;
       delete: string;
       deleteConfirm: (name: string) => string;
+    };
+    editor: {
+      title: (name: string) => string;
+      searchMods: string;
+      noMods: string;
+      noModpackTitle: string;
+      modCount: (n: number) => string;
+      removeConfirm: (name: string) => string;
     };
     code: {
       usesUnlimited: (n: number) => string;

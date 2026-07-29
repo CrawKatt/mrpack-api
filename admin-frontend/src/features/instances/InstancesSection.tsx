@@ -5,6 +5,7 @@ import {
   FileArchive,
   ImageUp,
   KeyRound,
+  PackageOpen,
   PackagePlus,
   Plus,
   Search,
@@ -32,6 +33,7 @@ import {
 import { MediaPreview, MediaSummary } from "./MediaPreview";
 import { CodesList } from "./CodesList";
 import { CreateInstanceForm } from "./CreateInstanceForm";
+import { InstanceModEditor } from "./InstanceModEditor";
 import { StatusBadge } from "../../components/StatusBadge";
 import { EmptyState } from "../../components/EmptyState";
 import { Spinner } from "../../components/Spinner";
@@ -46,6 +48,7 @@ export function InstanceCard({ instance }: { instance: AdminInstanceView }) {
   const { confirm } = useConfirm();
   const [progress, setProgress] = useState(0);
   const [showActions, setShowActions] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
 
   const uploadModpack = useUploadInstanceModpack();
   const addMod = useAddInstanceMod();
@@ -160,125 +163,145 @@ export function InstanceCard({ instance }: { instance: AdminInstanceView }) {
   const anyPending = uploadModpack.isPending || addMod.isPending || uploadMedia.isPending;
 
   return (
-    <article className="overflow-hidden rounded-lg border border-gray-200 bg-white">
-      <MediaPreview media={instance.media} />
-      <div className="p-4">
-        <header className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="truncate text-base font-semibold text-gray-950">{instance.name}</h3>
-              {isMain ? (
-                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-700">
-                  {t.instances.mainBadge}
-                </span>
-              ) : null}
-              {!accessEnabled ? (
-                <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-red-700">
-                  {t.instances.disabledBadge}
-                </span>
-              ) : null}
+    <>
+      <article className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+        <MediaPreview media={instance.media} />
+        <div className="p-4">
+          <header className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="truncate text-base font-semibold text-gray-950">{instance.name}</h3>
+                {isMain ? (
+                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-700">
+                    {t.instances.mainBadge}
+                  </span>
+                ) : null}
+                {!accessEnabled ? (
+                  <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold uppercase text-red-700">
+                    {t.instances.disabledBadge}
+                  </span>
+                ) : null}
+              </div>
+              <p className="mt-1 truncate font-mono text-[11px] text-gray-400">{instance.id}</p>
             </div>
-            <p className="mt-1 truncate font-mono text-[11px] text-gray-400">{instance.id}</p>
+            <StatusBadge
+              available={modpackAvailable}
+              availableText={t.instances.modpackLoaded}
+              unavailableText={t.instances.modpackMissing}
+            />
+          </header>
+
+          <p className="mt-4 min-h-10 text-xs leading-5 text-gray-500">{summaryText}</p>
+
+          <div className="mt-4 space-y-3 rounded-md border border-gray-100 bg-gray-50 p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+              {t.instances.accessControls}
+            </p>
+            <Switch
+              size="sm"
+              label={t.instances.flagAccess}
+              checked={accessEnabled}
+              disabled={updateInstance.isPending}
+              onCheckedChange={(checked) => toggleFlag({ accessEnabled: checked })}
+            />
+            <Switch
+              size="sm"
+              label={t.instances.flagDownload}
+              checked={downloadEnabled}
+              disabled={updateInstance.isPending || !accessEnabled}
+              onCheckedChange={(checked) => toggleFlag({ downloadEnabled: checked })}
+            />
+            <Switch
+              size="sm"
+              label={t.instances.flagPublic}
+              checked={isPublic}
+              disabled={updateInstance.isPending || !accessEnabled}
+              onCheckedChange={(checked) => toggleFlag({ isPublic: checked })}
+            />
+            <Switch
+              size="sm"
+              label={t.instances.flagMain}
+              checked={isMain}
+              disabled={updateInstance.isPending}
+              onCheckedChange={(checked) => toggleFlag({ isMain: checked })}
+            />
           </div>
-          <StatusBadge
-            available={modpackAvailable}
-            availableText={t.instances.modpackLoaded}
-            unavailableText={t.instances.modpackMissing}
-          />
-        </header>
 
-        <p className="mt-4 min-h-10 text-xs leading-5 text-gray-500">{summaryText}</p>
-
-        <div className="mt-4 space-y-3 rounded-md border border-gray-100 bg-gray-50 p-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-            {t.instances.accessControls}
-          </p>
-          <Switch
-            size="sm"
-            label={t.instances.flagAccess}
-            checked={accessEnabled}
-            disabled={updateInstance.isPending}
-            onCheckedChange={(checked) => toggleFlag({ accessEnabled: checked })}
-          />
-          <Switch
-            size="sm"
-            label={t.instances.flagDownload}
-            checked={downloadEnabled}
-            disabled={updateInstance.isPending || !accessEnabled}
-            onCheckedChange={(checked) => toggleFlag({ downloadEnabled: checked })}
-          />
-          <Switch
-            size="sm"
-            label={t.instances.flagPublic}
-            checked={isPublic}
-            disabled={updateInstance.isPending || !accessEnabled}
-            onCheckedChange={(checked) => toggleFlag({ isPublic: checked })}
-          />
-          <Switch
-            size="sm"
-            label={t.instances.flagMain}
-            checked={isMain}
-            disabled={updateInstance.isPending}
-            onCheckedChange={(checked) => toggleFlag({ isMain: checked })}
-          />
-        </div>
-
-        <div className="mt-4 grid grid-cols-3 divide-x divide-gray-100 border-y border-gray-100 py-3">
-          <CompactStat icon={Users} value={whitelistCount} label={t.instances.whitelist} />
-          <CompactStat icon={KeyRound} value={instance.codes.length} label={t.instances.codesLabel} />
-          <CompactStat icon={FileArchive} value={summary?.mod_count ?? 0} label={t.dashboard.mods} />
-        </div>
-
-        <MediaSummary media={instance.media} />
-        <CodesList codes={instance.codes} />
-
-        {anyPending ? (
-          <div className="mt-4 flex items-center gap-2">
-            <ProgressBar value={progress} className="flex-1" />
-            <span className="w-8 text-right text-[10px] font-medium text-gray-500">{Math.round(progress)}%</span>
+          <div className="mt-4 grid grid-cols-3 divide-x divide-gray-100 border-y border-gray-100 py-3">
+            <CompactStat icon={Users} value={whitelistCount} label={t.instances.whitelist} />
+            <CompactStat icon={KeyRound} value={instance.codes.length} label={t.instances.codesLabel} />
+            <CompactStat icon={FileArchive} value={summary?.mod_count ?? 0} label={t.dashboard.mods} />
           </div>
-        ) : null}
 
-        <div className="mt-4 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={handleGenerateCode}
-            disabled={!modpackAvailable}
-            loading={generateCodeMutation.isPending}
-            icon={<KeyRound size={15} />}
-          >
-            {t.instances.actions.generateCode}
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setShowActions((current) => !current)}
-            icon={showActions ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-            title={showActions ? t.instances.hideActions : t.instances.moreActions}
-          >
-            <span className="hidden sm:inline">{showActions ? t.instances.hideActions : t.instances.moreActions}</span>
-          </Button>
-        </div>
+          <MediaSummary media={instance.media} />
+          <CodesList codes={instance.codes} />
 
-        {showActions ? (
-          <div className="mt-3 grid grid-cols-2 gap-2 border-t border-gray-100 pt-3">
-            <ActionButton icon={Upload} label={t.instances.actions.uploadMrpack} onClick={handleUploadModpack} />
-            <ActionButton icon={ImageUp} label={t.instances.actions.uploadIcon} onClick={() => handleUploadMedia("icon")} />
-            <ActionButton icon={Wallpaper} label={t.instances.actions.uploadBackground} onClick={() => handleUploadMedia("background")} />
-            <ActionButton icon={PackagePlus} label={t.instances.actions.addJar} onClick={handleAddJar} disabled={!modpackAvailable} />
-            <button
-              type="button"
-              onClick={handleDelete}
-              disabled={deleteInstanceMutation.isPending}
-              className="col-span-2 flex h-9 items-center justify-center gap-2 rounded-md text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+          {anyPending ? (
+            <div className="mt-4 flex items-center gap-2">
+              <ProgressBar value={progress} className="flex-1" />
+              <span className="w-8 text-right text-[10px] font-medium text-gray-500">{Math.round(progress)}%</span>
+            </div>
+          ) : null}
+
+          <div className="mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleGenerateCode}
+              disabled={!modpackAvailable}
+              loading={generateCodeMutation.isPending}
+              icon={<KeyRound size={15} />}
             >
-              <Trash2 size={14} /> {t.instances.actions.delete}
-            </button>
+              {t.instances.actions.generateCode}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setEditorOpen(true)}
+              disabled={!modpackAvailable}
+              icon={<PackageOpen size={15} />}
+            >
+              {t.instances.actions.editMods}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setShowActions((current) => !current)}
+              icon={showActions ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+              title={showActions ? t.instances.hideActions : t.instances.moreActions}
+            >
+              <span className="hidden sm:inline">{showActions ? t.instances.hideActions : t.instances.moreActions}</span>
+            </Button>
           </div>
-        ) : null}
-      </div>
-    </article>
+
+          {showActions ? (
+            <div className="mt-3 grid grid-cols-2 gap-2 border-t border-gray-100 pt-3">
+              <ActionButton icon={Upload} label={t.instances.actions.uploadMrpack} onClick={handleUploadModpack} />
+              <ActionButton icon={ImageUp} label={t.instances.actions.uploadIcon} onClick={() => handleUploadMedia("icon")} />
+              <ActionButton icon={Wallpaper} label={t.instances.actions.uploadBackground} onClick={() => handleUploadMedia("background")} />
+              <ActionButton icon={PackagePlus} label={t.instances.actions.addJar} onClick={handleAddJar} disabled={!modpackAvailable} />
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={deleteInstanceMutation.isPending}
+                className="col-span-2 flex h-9 items-center justify-center gap-2 rounded-md text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+              >
+                <Trash2 size={14} /> {t.instances.actions.delete}
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </article>
+
+      <Modal
+        open={editorOpen}
+        onClose={() => setEditorOpen(false)}
+        title={t.instances.editor.title(instance.name)}
+        size="lg"
+      >
+        <InstanceModEditor instance={instance} />
+      </Modal>
+    </>
   );
 }
 

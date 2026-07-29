@@ -9,6 +9,7 @@ import type {
   InstanceCodeResponse,
   MainPackConfig,
   MaintenanceStatus,
+  ModEditResponse,
   ModpackDetails,
   UpdateInstancePayload,
   UploadFileResponse,
@@ -293,12 +294,22 @@ export const api = {
     instanceId: string,
     file: File,
     onProgress?: (pct: number) => void,
-  ): Promise<ApiResponse> {
+  ): Promise<ModEditResponse> {
     return uploadMultipart(
       `/api/admin/instances/${encodeURIComponent(instanceId)}/mods`,
       file,
       onProgress,
-    ) as Promise<ApiResponse>;
+    ) as Promise<ModEditResponse>;
+  },
+
+  removeInstanceMod(instanceId: string, path: string): Promise<ModEditResponse> {
+    return request<ModEditResponse>(
+      `/api/admin/instances/${encodeURIComponent(instanceId)}/mods`,
+      {
+        method: "DELETE",
+        body: JSON.stringify({ path }),
+      },
+    );
   },
 
   async downloadFile(): Promise<void> {
