@@ -1,33 +1,23 @@
-use argon2::{
-    password_hash::{PasswordHasher, SaltString},
-    Argon2,
-};
+use anyhow::{Result, anyhow, bail};
 use argon2::password_hash::rand_core::OsRng;
-use std::io::{self, Write};
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHasher as _, SaltString},
+};
+use std::io::{self, Write as _};
 
-fn main() {
+fn main() -> Result<()> {
     println!("============================================================");
     println!("Password Hash Generator (Argon2)");
     println!("============================================================");
     println!();
 
-    let password = if let Some(arg) = std::env::args().nth(1) {
-        arg
-    } else {
-        print!("Enter password: ");
-        io::stdout().flush().unwrap();
-
-        let mut password = String::new();
-        io::stdin()
-            .read_line(&mut password)
-            .expect("Failed to read password");
-
-        password.trim().to_string()
-    };
+    let password = std::env::args()
+        .nth(1)
+        .map_or_else(|| read_value("Enter password: "), Ok)?;
 
     if password.is_empty() {
-        eprintln!("Error: Password cannot be empty");
-        std::process::exit(1);
+        bail!("Password cannot be empty");
     }
 
     if password.len() < 8 {
@@ -37,22 +27,30 @@ fn main() {
     }
 
     let salt = SaltString::generate(&mut OsRng);
-
-    let argon2 = Argon2::default();
-    let password_hash = argon2
+    let password_hash = Argon2::default()
         .hash_password(password.as_bytes(), &salt)
-        .expect("Failed to hash password");
+        .map_err(|why| anyhow!("Failed to hash password: {why}"))?;
 
     println!("Password hash generated successfully!");
     println!();
     println!("Add this to your .env file:");
     println!("------------------------------------------------------------");
-    println!("ADMIN_PASSWORD_HASH={}", password_hash);
+    println!("ADMIN_PASSWORD_HASH={password_hash}");
     println!("------------------------------------------------------------");
     println!();
     println!("Or set it as an environment variable:");
-    println!("  export ADMIN_PASSWORD_HASH=\"{}\"", password_hash);
+    println!("  export ADMIN_PASSWORD_HASH=\"{password_hash}\"");
     println!();
     println!("Keep this hash secure and never commit it to version control!");
     println!();
+    Ok(())
+}
+
+fn read_value(prompt: &str) -> io::Result<String> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    Ok(value.trim().to_string())
 }

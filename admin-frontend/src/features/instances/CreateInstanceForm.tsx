@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Plus } from "lucide-react";
 import { Button } from "../../components/Button";
 import { Input } from "../../components/Input";
-import { useAlert } from "../../components/Alert";
+import { useAlert } from "../../components/useAlert";
 import { useI18n } from "../../i18n/useI18n";
 import { useCreateInstance } from "./useInstances";
 

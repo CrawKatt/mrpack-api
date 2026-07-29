@@ -8,6 +8,7 @@ mod sessions;
 mod utils;
 
 use anyhow::{Context, Result};
+use axum::response::Redirect;
 use axum::{
     Router,
     extract::DefaultBodyLimit,
@@ -17,7 +18,6 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use axum::response::Redirect;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
@@ -31,13 +31,13 @@ use handlers::MaintenanceConfig;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_logging()?;
+    init_logging();
 
     tracing::info!("Loading configuration...");
     let config = Config::from_env().context("Failed to load configuration")?;
     let config = Arc::new(config);
 
-    let _ = sessions::global_sessions(&config.storage.directory);
+    sessions::global_sessions(&config.storage.directory);
 
     log_startup_info(&config);
     tokio::fs::create_dir_all(&config.storage.directory)
@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to create crash-reports directory")?;
 
-    let app = build_app(config.clone())?;
+    let app = build_app(&config);
     let addr = config.socket_addr()?;
 
     tracing::info!("🚀 Starting server on {addr}");
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_logging() -> Result<()> {
+fn init_logging() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         let default_level = if cfg!(debug_assertions) {
             "mrpack_api=debug,tower_http=debug,axum=debug"
@@ -93,14 +93,50 @@ fn init_logging() -> Result<()> {
                 .with_line_number(true),
         )
         .init();
-
-    Ok(())
 }
 
-fn build_app(config: Arc<Config>) -> Result<Router> {
+fn build_app(config: &Arc<Config>) -> Router {
     let maintenance_tx: broadcast::Sender<MaintenanceConfig> = broadcast::channel(64).0;
+    let static_service = ServeDir::new("static").append_index_html_on_directories(true);
+    let max_body_size = config.storage.max_file_size_mb * 1024 * 1024;
 
-    let public_routes = Router::new()
+    let mut app = Router::new()
+        .route("/admin", get(|| async { Redirect::permanent("/admin/") }))
+        .merge(build_public_routes())
+        .merge(build_launcher_routes(config))
+        .merge(build_maintenance_routes(config))
+        .merge(build_admin_routes(config))
+        .fallback_service(static_service)
+        .layer(DefaultBodyLimit::max(max_body_size))
+        .layer(axum::Extension(maintenance_tx))
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(config),
+            auth::https_middleware,
+        ));
+
+    app = add_response_layers(app);
+
+    if config.security.require_https {
+        app = app.layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        ));
+    }
+
+    if let Some(cors_layer) = build_cors_layer(config) {
+        app = app.layer(cors_layer);
+    }
+
+    tracing::info!(
+        "Max upload size configured: {} MB",
+        config.storage.max_file_size_mb
+    );
+
+    app.with_state(Arc::clone(config))
+}
+
+fn build_public_routes() -> Router<Arc<Config>> {
+    Router::new()
         .route("/api/health", get(handlers::health_check))
         .route("/api/login", post(handlers::login))
         .route("/api/logout", post(handlers::logout))
@@ -112,29 +148,37 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
             "/api/maintenance/status",
             get(handlers::get_maintenance_status),
         )
-        .route(
-            "/api/maintenance/stream",
-            get(handlers::maintenance_stream),
-        );
+        .route("/api/maintenance/stream", get(handlers::maintenance_stream))
+}
 
-    let maintenance_check_routes = Router::new()
+fn build_maintenance_routes(config: &Arc<Config>) -> Router<Arc<Config>> {
+    Router::new()
         .route("/api/maintenance/check", post(handlers::check_maintenance))
         .layer(middleware::from_fn_with_state(
-            config.clone(),
+            Arc::clone(config),
             auth::maintenance_auth_middleware,
-        ));
+        ))
+}
 
+fn build_launcher_routes(config: &Arc<Config>) -> Router<Arc<Config>> {
     let crash_upload_limit = config.security.max_crash_report_bytes + 64 * 1024;
-    let protected_launcher_routes = Router::new()
+    Router::new()
         .route("/api/info", get(handlers::info_modpack))
         .route("/api/download", get(handlers::download_modpack))
-        .route("/api/instances/redeem", post(handlers::redeem_instance_code))
+        .route(
+            "/api/instances/redeem",
+            post(handlers::redeem_instance_code),
+        )
         .route("/api/social/snapshot", get(handlers::social_snapshot))
-        .route("/api/social/presence", post(handlers::update_social_presence))
+        .route(
+            "/api/social/presence",
+            post(handlers::update_social_presence),
+        )
         .route("/api/integrity/report", post(handlers::report_integrity))
         .route(
             "/api/crash-reports",
-            post(crash_reports::upload_crash_report).layer(DefaultBodyLimit::max(crash_upload_limit)),
+            post(crash_reports::upload_crash_report)
+                .layer(DefaultBodyLimit::max(crash_upload_limit)),
         )
         .route(
             "/api/instances/{instance_id}/info",
@@ -145,12 +189,14 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
             get(handlers::download_instance_modpack),
         )
         .layer(middleware::from_fn_with_state(
-            config.clone(),
+            Arc::clone(config),
             auth::download_auth_middleware,
-        ));
+        ))
+}
 
+fn build_admin_routes(config: &Arc<Config>) -> Router<Arc<Config>> {
     let two_gb = 2 * 1024 * 1024 * 1024;
-    let admin_routes = Router::new()
+    Router::new()
         .route(
             "/api/upload",
             post(handlers::upload_modpack).layer(DefaultBodyLimit::max(two_gb)),
@@ -224,26 +270,13 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
             get(crash_reports::get_crash_report).delete(crash_reports::delete_crash_report),
         )
         .layer(middleware::from_fn_with_state(
-            config.clone(),
+            Arc::clone(config),
             auth::auth_middleware,
-        ));
-
-    let static_service = ServeDir::new("static").append_index_html_on_directories(true);
-
-    let max_body_size = config.storage.max_file_size_mb * 1024 * 1024;
-    let mut app = Router::new()
-        .route("/admin", get(|| async { Redirect::permanent("/admin/") }))
-        .merge(public_routes)
-        .merge(protected_launcher_routes)
-        .merge(maintenance_check_routes)
-        .merge(admin_routes)
-        .fallback_service(static_service)
-        .layer(DefaultBodyLimit::max(max_body_size))
-        .layer(axum::Extension(maintenance_tx))
-        .layer(middleware::from_fn_with_state(
-            config.clone(),
-            auth::https_middleware,
         ))
+}
+
+fn add_response_layers(router: Router<Arc<Config>>) -> Router<Arc<Config>> {
+    router
         .layer(SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("x-content-type-options"),
             HeaderValue::from_static("nosniff"),
@@ -271,25 +304,6 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
-        .with_state(config.clone());
-
-    if config.security.require_https {
-        app = app.layer(SetResponseHeaderLayer::if_not_present(
-            HeaderName::from_static("strict-transport-security"),
-            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-        ));
-    }
-
-    if let Some(cors_layer) = build_cors_layer(&config) {
-        app = app.layer(cors_layer);
-    }
-
-    tracing::info!(
-        "Max upload size configured: {} MB",
-        config.storage.max_file_size_mb
-    );
-
-    Ok(app)
 }
 
 fn build_cors_layer(config: &Config) -> Option<CorsLayer> {
@@ -347,7 +361,7 @@ fn log_startup_info(config: &Config) {
         "  Download token configured: {}",
         config.auth.download_token_hash.is_some()
     );
-    tracing::info!("  Allow Basic admin: {}", config.security.allow_basic_admin);
+    tracing::info!("  Admin authentication: Bearer session");
     tracing::info!("  Require HTTPS: {}", config.security.require_https);
     tracing::info!(
         "  Max crash report: {} bytes",

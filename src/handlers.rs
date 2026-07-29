@@ -7,9 +7,12 @@ use axum::{
     body::Body,
     extract::{Multipart, Path as AxumPath, Query, State},
     http::{StatusCode, header},
-    response::{Response, sse::{Event, Sse}},
+    response::{
+        Response,
+        sse::{Event, Sse},
+    },
 };
-use bon::Builder;
+use num_traits::ToPrimitive as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read, Write};
@@ -31,6 +34,11 @@ const INSTANCE_MEDIA_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "webp", "gif", "avif", "svg", "bmp", "ico", "tif", "tiff", "mp4", "webm",
     "mov", "m4v", "ogv",
 ];
+const BYTES_PER_MEBIBYTE: f64 = 1_048_576.0;
+
+fn bytes_to_megabytes(bytes: u64) -> f64 {
+    bytes.to_f64().unwrap_or_default() / BYTES_PER_MEBIBYTE
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ModrinthIndex {
@@ -61,7 +69,7 @@ pub struct Environment {
     pub server: String,
 }
 
-#[derive(Serialize, Deserialize, Builder)]
+#[derive(Serialize, Deserialize)]
 pub struct ModpackDetails {
     pub available: bool,
     pub file_name: String,
@@ -74,7 +82,7 @@ pub struct ModpackDetails {
     pub background_kind: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Builder)]
+#[derive(Serialize, Deserialize)]
 pub struct ModpackInfo {
     pub name: String,
     pub summary: Option<String>,
@@ -87,7 +95,7 @@ pub struct ModpackInfo {
     pub mods: Vec<ModInfo>,
 }
 
-#[derive(Serialize, Deserialize, Builder)]
+#[derive(Serialize, Deserialize)]
 pub struct ModInfo {
     pub name: String,
     pub path: String,
@@ -105,21 +113,33 @@ struct InstanceStore {
 struct StoredInstance {
     id: String,
     name: String,
-    #[serde(default)]
-    is_public: bool,
-    #[serde(default = "default_true")]
-    download_enabled: bool,
-    #[serde(default = "default_true")]
-    access_enabled: bool,
-    #[serde(default)]
-    is_main: bool,
+    #[serde(flatten)]
+    visibility: InstanceVisibility,
+    #[serde(flatten)]
+    availability: InstanceAvailability,
     #[serde(default)]
     whitelist: Vec<WhitelistEntry>,
     #[serde(default)]
     media: InstanceMedia,
 }
 
-fn default_true() -> bool {
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct InstanceVisibility {
+    #[serde(default)]
+    pub is_public: bool,
+    #[serde(default)]
+    pub is_main: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct InstanceAvailability {
+    #[serde(default = "default_true")]
+    pub download_enabled: bool,
+    #[serde(default = "default_true")]
+    pub access_enabled: bool,
+}
+
+const fn default_true() -> bool {
     true
 }
 
@@ -174,10 +194,10 @@ pub struct RedeemCodeResponse {
 pub struct AdminInstanceView {
     pub id: String,
     pub name: String,
-    pub is_public: bool,
-    pub download_enabled: bool,
-    pub access_enabled: bool,
-    pub is_main: bool,
+    #[serde(flatten)]
+    pub visibility: InstanceVisibility,
+    #[serde(flatten)]
+    pub availability: InstanceAvailability,
     pub whitelist_count: usize,
     pub codes: Vec<InstanceCode>,
     pub modpack: ModpackDetails,
@@ -246,6 +266,13 @@ pub struct RedeemCodeRequest {
 async fn extract_modpack_info(
     file_path: &Path,
 ) -> Result<ModpackInfo, Box<dyn std::error::Error + Send + Sync>> {
+    let file_path = file_path.to_path_buf();
+    tokio::task::spawn_blocking(move || extract_modpack_info_sync(&file_path)).await?
+}
+
+fn extract_modpack_info_sync(
+    file_path: &Path,
+) -> Result<ModpackInfo, Box<dyn std::error::Error + Send + Sync>> {
     let file = std::fs::File::open(file_path)?;
     let mut archive = ZipArchive::new(file)?;
 
@@ -266,8 +293,9 @@ async fn extract_modpack_info(
                 .to_string_lossy()
                 .to_string();
 
-            let environment = match &file.env {
-                Some(env) => {
+            let environment = file.env.as_ref().map_or_else(
+                || "both".to_string(),
+                |env| {
                     if env.client == "required" && env.server == "required" {
                         "both".to_string()
                     } else if env.client == "required" {
@@ -277,17 +305,16 @@ async fn extract_modpack_info(
                     } else {
                         "optional".to_string()
                     }
-                }
-                None => "both".to_string(),
-            };
+                },
+            );
 
-            return ModInfo::builder()
-                .name(name)
-                .path(file.path.clone())
-                .file_size(file.file_size)
-                .environment(environment)
-                .source("manifest".to_string())
-                .build();
+            ModInfo {
+                name,
+                path: file.path.clone(),
+                file_size: file.file_size,
+                environment,
+                source: "manifest".to_string(),
+            }
         })
         .collect();
 
@@ -304,28 +331,30 @@ async fn extract_modpack_info(
             .to_string_lossy()
             .to_string();
 
-        mods.push(
-            ModInfo::builder()
-                .name(name)
-                .path(path)
-                .file_size(file.size())
-                .environment("both".to_string())
-                .source("override".to_string())
-                .build(),
-        );
+        mods.push(ModInfo {
+            name,
+            path,
+            file_size: file.size(),
+            environment: "both".to_string(),
+            source: "override".to_string(),
+        });
     }
 
-    let modpack_info = ModpackInfo::builder()
-        .name(index.name)
-        .maybe_summary(index.summary)
-        .version_id(index.version_id)
-        .format_version(index.format_version)
-        .minecraft_version(index.dependencies.get("minecraft").cloned().unwrap_or_default())
-        .loader(loader)
-        .loader_version(loader_version)
-        .mod_count(mods.len())
-        .mods(mods)
-        .build();
+    let modpack_info = ModpackInfo {
+        name: index.name,
+        summary: index.summary,
+        version_id: index.version_id,
+        format_version: index.format_version,
+        minecraft_version: index
+            .dependencies
+            .get("minecraft")
+            .cloned()
+            .unwrap_or_default(),
+        loader,
+        loader_version,
+        mod_count: mods.len(),
+        mods,
+    };
 
     Ok(modpack_info)
 }
@@ -362,27 +391,9 @@ impl ApiResponse {
             data: None,
         }
     }
-
-    pub fn success_with_data(message: impl Into<String>, data: serde_json::Value) -> Self {
-        Self {
-            success: true,
-            message: message.into(),
-            data: Some(data),
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct FileInfo {
-    pub available: bool,
-    pub file_name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_size: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_size_mb: Option<f64>,
-}
-
-#[derive(Serialize, Deserialize, Builder)]
 pub struct UploadResponse {
     pub success: bool,
     pub message: String,
@@ -391,7 +402,7 @@ pub struct UploadResponse {
     pub file_size_mb: f64,
 }
 
-#[derive(Serialize, Deserialize, Builder)]
+#[derive(Serialize, Deserialize)]
 pub struct ModEditResponse {
     pub success: bool,
     pub message: String,
@@ -436,10 +447,8 @@ pub async fn login(
 
     tracing::info!("Login attempt for user: {}", payload.username);
 
-    let username_matches = constant_time_compare(
-        payload.username.as_bytes(),
-        config.auth.username.as_bytes(),
-    );
+    let username_matches =
+        constant_time_compare(payload.username.as_bytes(), config.auth.username.as_bytes());
 
     let password_hash = PasswordHash::new(&config.auth.password_hash)
         .map_err(|why| AppError::Internal(format!("Invalid password hash format: {why}")))?;
@@ -496,7 +505,6 @@ pub async fn update_main_pack_config(
     Ok(Json(payload))
 }
 
-
 pub async fn list_instances(
     State(config): State<Arc<Config>>,
 ) -> ResponseResult<Json<AdminInstancesResponse>> {
@@ -504,7 +512,8 @@ pub async fn list_instances(
     let mut instances = Vec::new();
 
     for instance in store.instances.values() {
-        let modpack = modpack_details_for_path(&get_instance_mrpack_path(&config, &instance.id)).await?;
+        let modpack =
+            modpack_details_for_path(&get_instance_mrpack_path(&config, &instance.id)).await?;
         let mut codes: Vec<InstanceCode> = store
             .codes
             .values()
@@ -515,10 +524,8 @@ pub async fn list_instances(
         instances.push(AdminInstanceView {
             id: instance.id.clone(),
             name: instance.name.clone(),
-            is_public: instance.is_public,
-            download_enabled: instance.download_enabled,
-            access_enabled: instance.access_enabled,
-            is_main: instance.is_main,
+            visibility: instance.visibility.clone(),
+            availability: instance.availability.clone(),
             whitelist_count: instance.whitelist.len(),
             codes,
             modpack,
@@ -528,8 +535,9 @@ pub async fn list_instances(
 
     instances.sort_by(|left, right| {
         right
+            .visibility
             .is_main
-            .cmp(&left.is_main)
+            .cmp(&left.visibility.is_main)
             .then_with(|| left.name.cmp(&right.name))
     });
     Ok(Json(AdminInstancesResponse { instances }))
@@ -542,7 +550,9 @@ pub async fn create_instance(
     let _guard = instance_store_lock().lock().await;
     let name = payload.name.trim();
     if name.is_empty() {
-        return Err(AppError::BadRequest("Instance name is required".to_string()));
+        return Err(AppError::BadRequest(
+            "Instance name is required".to_string(),
+        ));
     }
 
     let mut store = load_instance_store(&config).await?;
@@ -570,17 +580,18 @@ pub async fn create_instance(
     let is_public = payload.is_public.unwrap_or(is_main);
     if is_main {
         for other in store.instances.values_mut() {
-            other.is_main = false;
+            other.visibility.is_main = false;
         }
     }
 
     let instance = StoredInstance {
         id: id.clone(),
         name: name.to_string(),
-        is_public,
-        download_enabled: true,
-        access_enabled: true,
-        is_main,
+        visibility: InstanceVisibility { is_public, is_main },
+        availability: InstanceAvailability {
+            download_enabled: true,
+            access_enabled: true,
+        },
         whitelist: Vec::new(),
         media,
     };
@@ -593,10 +604,8 @@ pub async fn create_instance(
     Ok(Json(AdminInstanceView {
         id: instance.id,
         name: instance.name,
-        is_public: instance.is_public,
-        download_enabled: instance.download_enabled,
-        access_enabled: instance.access_enabled,
-        is_main: instance.is_main,
+        visibility: instance.visibility,
+        availability: instance.availability,
         whitelist_count: 0,
         codes: Vec::new(),
         modpack: unavailable_modpack_details(MRPACK_FILENAME),
@@ -619,35 +628,42 @@ pub async fn update_instance(
     if let Some(name) = payload.name {
         let name = name.trim();
         if name.is_empty() {
-            return Err(AppError::BadRequest("Instance name is required".to_string()));
+            return Err(AppError::BadRequest(
+                "Instance name is required".to_string(),
+            ));
         }
         instance.name = name.to_string();
     }
     if let Some(is_public) = payload.is_public {
-        instance.is_public = is_public;
+        instance.visibility.is_public = is_public;
     }
     if let Some(download_enabled) = payload.download_enabled {
-        instance.download_enabled = download_enabled;
+        instance.availability.download_enabled = download_enabled;
     }
     if let Some(access_enabled) = payload.access_enabled {
-        instance.access_enabled = access_enabled;
+        instance.availability.access_enabled = access_enabled;
     }
-    if let Some(true) = payload.is_main {
-        instance.is_main = true;
-        instance.is_public = true;
+    if payload.is_main == Some(true) {
+        instance.visibility.is_main = true;
+        instance.visibility.is_public = true;
         let current_id = instance.id.clone();
         for other in store.instances.values_mut() {
             if other.id != current_id {
-                other.is_main = false;
+                other.visibility.is_main = false;
             }
         }
-    } else if let Some(false) = payload.is_main {
-        instance.is_main = false;
+    } else if payload.is_main == Some(false) {
+        instance.visibility.is_main = false;
     }
 
-    let instance = store.instances.get(&instance_id).cloned().unwrap();
+    let instance = store
+        .instances
+        .get(&instance_id)
+        .cloned()
+        .ok_or_else(|| AppError::FileNotFound("Instance not found".to_string()))?;
     save_instance_store(&config, &store).await?;
-    let modpack = modpack_details_for_path(&get_instance_mrpack_path(&config, &instance.id)).await?;
+    let modpack =
+        modpack_details_for_path(&get_instance_mrpack_path(&config, &instance.id)).await?;
     let mut codes: Vec<InstanceCode> = store
         .codes
         .values()
@@ -659,10 +675,8 @@ pub async fn update_instance(
     Ok(Json(AdminInstanceView {
         id: instance.id,
         name: instance.name,
-        is_public: instance.is_public,
-        download_enabled: instance.download_enabled,
-        access_enabled: instance.access_enabled,
-        is_main: instance.is_main,
+        visibility: instance.visibility,
+        availability: instance.availability,
         whitelist_count: instance.whitelist.len(),
         codes,
         modpack,
@@ -679,7 +693,9 @@ pub async fn delete_instance(
     if store.instances.remove(&instance_id).is_none() {
         return Err(AppError::FileNotFound("Instance not found".to_string()));
     }
-    store.codes.retain(|_, code| code.instance_id != instance_id);
+    store
+        .codes
+        .retain(|_, code| code.instance_id != instance_id);
     save_instance_store(&config, &store).await?;
     let dir = get_instance_dir(&config, &instance_id);
     if dir.exists() {
@@ -728,8 +744,14 @@ pub async fn redeem_instance_code(
         .get_mut(&code_value)
         .ok_or_else(|| AppError::Forbidden("Invalid instance code".to_string()))?;
 
-    if !instance_code.active || instance_code.max_uses.is_some_and(|max| instance_code.uses >= max) {
-        return Err(AppError::Forbidden("El código ya fue usado o está desactivado".to_string()));
+    if !instance_code.active
+        || instance_code
+            .max_uses
+            .is_some_and(|max| instance_code.uses >= max)
+    {
+        return Err(AppError::Forbidden(
+            "El código ya fue usado o está desactivado".to_string(),
+        ));
     }
 
     let instance_id = instance_code.instance_id.clone();
@@ -738,18 +760,19 @@ pub async fn redeem_instance_code(
         .get(&instance_id)
         .ok_or_else(|| AppError::FileNotFound("Instance not found".to_string()))?;
 
-    if !instance_flags.access_enabled {
+    if !instance_flags.availability.access_enabled {
         return Err(AppError::Forbidden(
             "Esta instancia está desactivada por el administrador".to_string(),
         ));
     }
-    if instance_flags.is_public {
+    if instance_flags.visibility.is_public {
         return Err(AppError::BadRequest(
             "Esta instancia es pública y no requiere código de acceso".to_string(),
         ));
     }
 
-    let modpack = modpack_details_for_path(&get_instance_mrpack_path(&config, &instance_id)).await?;
+    let modpack =
+        modpack_details_for_path(&get_instance_mrpack_path(&config, &instance_id)).await?;
     if !modpack.available {
         return Err(AppError::BadRequest(
             "La instancia todavía no tiene un modpack cargado desde el panel admin".to_string(),
@@ -807,7 +830,8 @@ pub async fn info_instance_modpack(
         .get(&instance_id)
         .map(|instance| instance.media.clone())
         .unwrap_or_default();
-    let mut details = modpack_details_for_path(&get_instance_mrpack_path(&config, &instance_id)).await?;
+    let mut details =
+        modpack_details_for_path(&get_instance_mrpack_path(&config, &instance_id)).await?;
     details.icon_url = media.icon_url;
     details.background_url = media.background_url;
     details.icon_kind = media.icon_kind;
@@ -830,7 +854,12 @@ pub async fn upload_instance_modpack(
     multipart: Multipart,
 ) -> ResponseResult<Json<UploadResponse>> {
     ensure_instance_exists(&config, &instance_id).await?;
-    upload_modpack_to_path(&config, get_instance_mrpack_path(&config, &instance_id), multipart).await
+    upload_modpack_to_path(
+        &config,
+        get_instance_mrpack_path(&config, &instance_id),
+        multipart,
+    )
+    .await
 }
 
 pub async fn delete_instance_modpack(
@@ -840,7 +869,6 @@ pub async fn delete_instance_modpack(
     ensure_instance_exists(&config, &instance_id).await?;
     delete_modpack_at_path(get_instance_mrpack_path(&config, &instance_id)).await
 }
-
 
 pub async fn upload_instance_media(
     State(config): State<Arc<Config>>,
@@ -856,12 +884,16 @@ pub async fn upload_instance_media(
 
     let (extension, data) = read_media_upload(multipart).await?;
     let media_dir = get_instance_media_dir(&config, &instance_id);
-    fs::create_dir_all(&media_dir).await.map_err(AppError::FileIo)?;
+    fs::create_dir_all(&media_dir)
+        .await
+        .map_err(AppError::FileIo)?;
     remove_existing_media_slot(&media_dir, slot).await?;
     let file_path = media_dir.join(format!("{slot}.{extension}"));
-    fs::write(&file_path, data).await.map_err(AppError::FileIo)?;
+    fs::write(&file_path, data)
+        .await
+        .map_err(AppError::FileIo)?;
 
-    let media_url = format!("/api/media/instances/{}/{}", instance_id, slot);
+    let media_url = format!("/api/media/instances/{instance_id}/{slot}");
     let media_kind = media_kind_from_extension(&extension).map(str::to_string);
     let instance = store
         .instances
@@ -880,7 +912,9 @@ pub async fn upload_instance_media(
     }
     save_instance_store(&config, &store).await?;
 
-    Ok(Json(ApiResponse::success("Instance media uploaded successfully")))
+    Ok(Json(ApiResponse::success(
+        "Instance media uploaded successfully",
+    )))
 }
 
 pub async fn serve_instance_media(
@@ -894,12 +928,12 @@ pub async fn serve_instance_media(
     let stream = ReaderStream::new(file);
     let content_type = media_content_type(&file_path);
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, "public, max-age=3600")
         .body(Body::from_stream(stream))
-        .map_err(|why| AppError::Internal(format!("Failed to build media response: {why}")))?)
+        .map_err(|why| AppError::Internal(format!("Failed to build media response: {why}")))
 }
 pub async fn add_instance_mod(
     State(config): State<Arc<Config>>,
@@ -907,7 +941,12 @@ pub async fn add_instance_mod(
     multipart: Multipart,
 ) -> ResponseResult<Json<ModEditResponse>> {
     ensure_instance_exists(&config, &instance_id).await?;
-    add_mod_to_path(&config, get_instance_mrpack_path(&config, &instance_id), multipart).await
+    add_mod_to_path(
+        &config,
+        get_instance_mrpack_path(&config, &instance_id),
+        multipart,
+    )
+    .await
 }
 
 pub async fn remove_instance_mod(
@@ -933,10 +972,7 @@ pub async fn info_modpack(
 
     let file_path = get_mrpack_path(&config);
     if !file_path.exists() {
-        let modpack_details = ModpackDetails::builder()
-            .available(false)
-            .file_name(MRPACK_FILENAME.to_string())
-            .build();
+        let modpack_details = unavailable_modpack_details(MRPACK_FILENAME);
 
         return Ok(Json(modpack_details));
     }
@@ -947,7 +983,7 @@ pub async fn info_modpack(
     })?;
 
     let file_size = metadata.len();
-    let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
+    let file_size_mb = bytes_to_megabytes(file_size);
 
     let modpack_info = extract_modpack_info(&file_path).await.map_err(|why| {
         tracing::error!("Stored modpack is invalid: {why}");
@@ -960,13 +996,17 @@ pub async fn info_modpack(
         main_pack.download_enabled
     };
 
-    let modpack_details = ModpackDetails::builder()
-        .available(available)
-        .file_name(MRPACK_FILENAME.to_string())
-        .file_size(file_size)
-        .file_size_mb(file_size_mb)
-        .modpack_info(modpack_info)
-        .build();
+    let modpack_details = ModpackDetails {
+        available,
+        file_name: MRPACK_FILENAME.to_string(),
+        file_size: Some(file_size),
+        file_size_mb: Some(file_size_mb),
+        modpack_info: Some(modpack_info),
+        icon_url: None,
+        background_url: None,
+        icon_kind: None,
+        background_kind: None,
+    };
 
     Ok(Json(modpack_details))
 }
@@ -991,12 +1031,12 @@ pub async fn download_modpack(
     }
 
     let file_path = get_mrpack_path(&config);
-    let metadata = fs::metadata(&file_path).await.map_err(|_| {
-        AppError::FileNotFound("No modpack available for download".to_string())
-    })?;
+    let metadata = fs::metadata(&file_path)
+        .await
+        .map_err(|_| AppError::FileNotFound("No modpack available for download".to_string()))?;
 
     let file_size = metadata.len();
-    let file_size_mb = file_size as f64 / 1024.0 / 1024.0;
+    let file_size_mb = bytes_to_megabytes(file_size);
 
     tracing::info!(
         "Modpack download started: {} ({:.2} MB)",
@@ -1014,7 +1054,10 @@ pub async fn download_modpack(
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", MRPACK_FILENAME))
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{MRPACK_FILENAME}\""),
+        )
         .header(header::CONTENT_LENGTH, file_size.to_string())
         .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
         .body(body)
@@ -1060,7 +1103,7 @@ pub async fn upload_modpack(
         let data = field
             .bytes()
             .await
-            .map_err(|why| AppError::MultipartError(format!("Failed to read file data: {}", why)))?
+            .map_err(|why| AppError::MultipartError(format!("Failed to read file data: {why}")))?
             .to_vec();
 
         validate_file_size(data.len(), &config)?;
@@ -1073,7 +1116,7 @@ pub async fn upload_modpack(
         file_data.ok_or_else(|| AppError::BadRequest("No file provided in request".to_string()))?;
 
     let file_size = data.len() as u64;
-    let file_size_mb = file_size as f64 / 1024.0 / 1024.0;
+    let file_size_mb = bytes_to_megabytes(file_size);
     tracing::info!("Uploading file: {original_name} ({:.2} MB)", file_size_mb);
 
     let storage_dir = &config.storage.directory;
@@ -1113,13 +1156,13 @@ pub async fn upload_modpack(
         file_size_mb
     );
 
-    let upload_response = UploadResponse::builder()
-        .success(true)
-        .message("File uploaded successfully".to_string())
-        .file_name(original_name)
-        .file_size(file_size)
-        .file_size_mb(file_size_mb)
-        .build();
+    let upload_response = UploadResponse {
+        success: true,
+        message: "File uploaded successfully".to_string(),
+        file_name: original_name,
+        file_size,
+        file_size_mb,
+    };
 
     Ok(Json(upload_response))
 }
@@ -1178,14 +1221,12 @@ pub async fn add_mod(
     let mod_path = add_override_mod_to_mrpack(file_path.clone(), file_name, data).await?;
     let modpack_info = extract_modpack_info(&file_path).await.ok();
 
-    Ok(Json(
-        ModEditResponse::builder()
-            .success(true)
-            .message("Mod added to modpack".to_string())
-            .path(mod_path)
-            .maybe_modpack_info(modpack_info)
-            .build(),
-    ))
+    Ok(Json(ModEditResponse {
+        success: true,
+        message: "Mod added to modpack".to_string(),
+        path: mod_path,
+        modpack_info,
+    }))
 }
 
 pub async fn delete_modpack(
@@ -1228,14 +1269,12 @@ pub async fn remove_mod(
     let removed_path = remove_mod_from_mrpack(file_path.clone(), target_path).await?;
     let modpack_info = extract_modpack_info(&file_path).await.ok();
 
-    Ok(Json(
-        ModEditResponse::builder()
-            .success(true)
-            .message("Mod removed from modpack".to_string())
-            .path(removed_path)
-            .maybe_modpack_info(modpack_info)
-            .build(),
-    ))
+    Ok(Json(ModEditResponse {
+        success: true,
+        message: "Mod removed from modpack".to_string(),
+        path: removed_path,
+        modpack_info,
+    }))
 }
 
 async fn modpack_details_for_path(file_path: &Path) -> ResponseResult<ModpackDetails> {
@@ -1249,35 +1288,46 @@ async fn modpack_details_for_path(file_path: &Path) -> ResponseResult<ModpackDet
     })?;
 
     let file_size = metadata.len();
-    let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
+    let file_size_mb = bytes_to_megabytes(file_size);
     let modpack_info = extract_modpack_info(file_path).await.map_err(|why| {
         tracing::error!("Stored modpack is invalid: {why}");
         AppError::Internal("Stored modpack is invalid".to_string())
     })?;
 
-    Ok(ModpackDetails::builder()
-        .available(true)
-        .file_name(MRPACK_FILENAME.to_string())
-        .file_size(file_size)
-        .file_size_mb(file_size_mb)
-        .modpack_info(modpack_info)
-        .build())
+    Ok(ModpackDetails {
+        available: true,
+        file_name: MRPACK_FILENAME.to_string(),
+        file_size: Some(file_size),
+        file_size_mb: Some(file_size_mb),
+        modpack_info: Some(modpack_info),
+        icon_url: None,
+        background_url: None,
+        icon_kind: None,
+        background_kind: None,
+    })
 }
 
 fn unavailable_modpack_details(file_name: &str) -> ModpackDetails {
-    ModpackDetails::builder()
-        .available(false)
-        .file_name(file_name.to_string())
-        .build()
+    ModpackDetails {
+        available: false,
+        file_name: file_name.to_string(),
+        file_size: None,
+        file_size_mb: None,
+        modpack_info: None,
+        icon_url: None,
+        background_url: None,
+        icon_kind: None,
+        background_kind: None,
+    }
 }
 
 async fn download_modpack_file(file_path: PathBuf) -> ResponseResult<Response> {
-    let metadata = fs::metadata(&file_path).await.map_err(|_| {
-        AppError::FileNotFound("No modpack available for download".to_string())
-    })?;
+    let metadata = fs::metadata(&file_path)
+        .await
+        .map_err(|_| AppError::FileNotFound("No modpack available for download".to_string()))?;
 
     let file_size = metadata.len();
-    let file_size_mb = file_size as f64 / 1024.0 / 1024.0;
+    let file_size_mb = bytes_to_megabytes(file_size);
     tracing::info!(
         "Modpack download started: {} ({:.2} MB)",
         MRPACK_FILENAME,
@@ -1294,7 +1344,10 @@ async fn download_modpack_file(file_path: PathBuf) -> ResponseResult<Response> {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", MRPACK_FILENAME))
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{MRPACK_FILENAME}\""),
+        )
         .header(header::CONTENT_LENGTH, file_size.to_string())
         .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
         .body(body)
@@ -1335,7 +1388,7 @@ async fn upload_modpack_to_path(
         let data = field
             .bytes()
             .await
-            .map_err(|why| AppError::MultipartError(format!("Failed to read file data: {}", why)))?
+            .map_err(|why| AppError::MultipartError(format!("Failed to read file data: {why}")))?
             .to_vec();
 
         validate_file_size(data.len(), config)?;
@@ -1348,13 +1401,15 @@ async fn upload_modpack_to_path(
         file_data.ok_or_else(|| AppError::BadRequest("No file provided in request".to_string()))?;
 
     let file_size = data.len() as u64;
-    let file_size_mb = file_size as f64 / 1024.0 / 1024.0;
+    let file_size_mb = bytes_to_megabytes(file_size);
     if let Some(parent) = file_path.parent() {
         fs::create_dir_all(parent).await.map_err(AppError::FileIo)?;
     }
 
     let temp_path = file_path.with_extension("tmp");
-    let mut file = fs::File::create(&temp_path).await.map_err(AppError::FileIo)?;
+    let mut file = fs::File::create(&temp_path)
+        .await
+        .map_err(AppError::FileIo)?;
     file.write_all(&data).await.map_err(AppError::FileIo)?;
     file.sync_all().await.map_err(AppError::FileIo)?;
     drop(file);
@@ -1363,13 +1418,13 @@ async fn upload_modpack_to_path(
         AppError::FileIo(why)
     })?;
 
-    Ok(Json(UploadResponse::builder()
-        .success(true)
-        .message("File uploaded successfully".to_string())
-        .file_name(original_name)
-        .file_size(file_size)
-        .file_size_mb(file_size_mb)
-        .build()))
+    Ok(Json(UploadResponse {
+        success: true,
+        message: "File uploaded successfully".to_string(),
+        file_name: original_name,
+        file_size,
+        file_size_mb,
+    }))
 }
 
 async fn add_mod_to_path(
@@ -1381,7 +1436,9 @@ async fn add_mod_to_path(
     let _guard = modpack_write_lock().lock().await;
 
     if !file_path.exists() {
-        return Err(AppError::FileNotFound("No modpack file to edit".to_string()));
+        return Err(AppError::FileNotFound(
+            "No modpack file to edit".to_string(),
+        ));
     }
 
     let mut mod_data: Option<(String, Vec<u8>)> = None;
@@ -1424,20 +1481,24 @@ async fn add_mod_to_path(
     let mod_path = add_override_mod_to_mrpack(file_path.clone(), file_name, data).await?;
     let modpack_info = extract_modpack_info(&file_path).await.ok();
 
-    Ok(Json(ModEditResponse::builder()
-        .success(true)
-        .message("Mod added to modpack".to_string())
-        .path(mod_path)
-        .maybe_modpack_info(modpack_info)
-        .build()))
+    Ok(Json(ModEditResponse {
+        success: true,
+        message: "Mod added to modpack".to_string(),
+        path: mod_path,
+        modpack_info,
+    }))
 }
 
 async fn delete_modpack_at_path(file_path: PathBuf) -> ResponseResult<Json<ApiResponse>> {
     let _guard = modpack_write_lock().lock().await;
     if !file_path.exists() {
-        return Err(AppError::FileNotFound("No modpack file to delete".to_string()));
+        return Err(AppError::FileNotFound(
+            "No modpack file to delete".to_string(),
+        ));
     }
-    fs::remove_file(&file_path).await.map_err(AppError::FileIo)?;
+    fs::remove_file(&file_path)
+        .await
+        .map_err(AppError::FileIo)?;
     Ok(Json(ApiResponse::success("Modpack deleted successfully")))
 }
 
@@ -1450,19 +1511,21 @@ async fn remove_mod_from_path(
     let _guard = modpack_write_lock().lock().await;
 
     if !file_path.exists() {
-        return Err(AppError::FileNotFound("No modpack file to edit".to_string()));
+        return Err(AppError::FileNotFound(
+            "No modpack file to edit".to_string(),
+        ));
     }
 
     let target_path = normalize_archive_path(&payload.path)?;
     let removed_path = remove_mod_from_mrpack(file_path.clone(), target_path).await?;
     let modpack_info = extract_modpack_info(&file_path).await.ok();
 
-    Ok(Json(ModEditResponse::builder()
-        .success(true)
-        .message("Mod removed from modpack".to_string())
-        .path(removed_path)
-        .maybe_modpack_info(modpack_info)
-        .build()))
+    Ok(Json(ModEditResponse {
+        success: true,
+        message: "Mod removed from modpack".to_string(),
+        path: removed_path,
+        modpack_info,
+    }))
 }
 
 async fn ensure_instance_exists(config: &Config, instance_id: &str) -> ResponseResult<()> {
@@ -1486,18 +1549,18 @@ async fn require_instance_access(
         .get(instance_id)
         .ok_or_else(|| AppError::FileNotFound("Instance not found".to_string()))?;
 
-    if !instance.access_enabled {
+    if !instance.availability.access_enabled {
         return Err(AppError::Forbidden(
             "Esta instancia está desactivada por el administrador".to_string(),
         ));
     }
-    if require_download && !instance.download_enabled {
+    if require_download && !instance.availability.download_enabled {
         return Err(AppError::Forbidden(
             "La descarga de esta instancia está desactivada".to_string(),
         ));
     }
 
-    if instance.is_public {
+    if instance.visibility.is_public {
         return Ok(());
     }
 
@@ -1530,9 +1593,9 @@ async fn require_instance_code(
 
 async fn is_admin_caller(headers: &axum::http::HeaderMap, config: &Config) -> bool {
     matches!(
-        crate::auth::verify_admin_request(headers, config).await,
+        crate::auth::verify_admin_session(headers, config).await,
         Ok(true)
-    ) || matches!(crate::auth::verify_admin_auth(headers, config), Ok(true))
+    )
 }
 
 async fn load_main_pack_config(config: &Config) -> ResponseResult<MainPackConfig> {
@@ -1579,8 +1642,12 @@ async fn save_instance_store(config: &Config, store: &InstanceStore) -> Response
     let temp_path = path.with_extension("tmp");
     let data = serde_json::to_vec_pretty(store)
         .map_err(|why| AppError::Internal(format!("Failed to serialize instance store: {why}")))?;
-    fs::write(&temp_path, data).await.map_err(AppError::FileIo)?;
-    fs::rename(&temp_path, &path).await.map_err(AppError::FileIo)?;
+    fs::write(&temp_path, data)
+        .await
+        .map_err(AppError::FileIo)?;
+    fs::rename(&temp_path, &path)
+        .await
+        .map_err(AppError::FileIo)?;
     Ok(())
 }
 
@@ -1595,7 +1662,6 @@ fn get_instance_dir(config: &Config, instance_id: &str) -> PathBuf {
 fn get_instance_mrpack_path(config: &Config, instance_id: &str) -> PathBuf {
     get_instance_dir(config, instance_id).join(MRPACK_FILENAME)
 }
-
 
 fn get_instance_media_dir(config: &Config, instance_id: &str) -> PathBuf {
     get_instance_dir(config, instance_id).join(INSTANCE_MEDIA_DIR)
@@ -1613,7 +1679,11 @@ fn clean_optional_url(value: Option<String>) -> Option<String> {
 }
 
 fn infer_media_kind(value: &str) -> Option<String> {
-    let clean = value.split('?').next().unwrap_or(value).to_ascii_lowercase();
+    let clean = value
+        .split('?')
+        .next()
+        .unwrap_or(value)
+        .to_ascii_lowercase();
     let extension = clean.rsplit('.').next()?;
     media_kind_from_extension(extension).map(str::to_string)
 }
@@ -1621,13 +1691,20 @@ fn infer_media_kind(value: &str) -> Option<String> {
 fn media_kind_from_extension(extension: &str) -> Option<&'static str> {
     match extension.to_ascii_lowercase().as_str() {
         "mp4" | "webm" | "mov" | "m4v" | "ogv" => Some("video"),
-        "png" | "jpg" | "jpeg" | "webp" | "gif" | "avif" | "svg" | "bmp" | "ico" | "tif" | "tiff" => Some("image"),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "avif" | "svg" | "bmp" | "ico" | "tif"
+        | "tiff" => Some("image"),
         _ => None,
     }
 }
 
 fn media_content_type(file_path: &Path) -> &'static str {
-    match file_path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase().as_str() {
+    match file_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
@@ -1655,38 +1732,49 @@ fn normalize_media_slot(value: &str) -> ResponseResult<&'static str> {
 }
 
 async fn read_media_upload(mut multipart: Multipart) -> ResponseResult<(String, Vec<u8>)> {
-    while let Some(field) = multipart
+    let Some(field) = multipart
         .next_field()
         .await
         .map_err(|why| AppError::MultipartError(why.to_string()))?
-    {
-        let content_type = field.content_type().map(str::to_string);
-        let file_name = field.file_name().map(str::to_string).unwrap_or_else(|| "media".to_string());
-        let extension = file_name
-            .rsplit('.')
-            .next()
-            .map(|value| value.to_ascii_lowercase())
-            .filter(|value| value.chars().all(|character| character.is_ascii_alphanumeric()) && value.len() <= 10)
-            .ok_or_else(|| AppError::BadRequest("Media file must have an extension".to_string()))?;
-        let is_allowed_extension = INSTANCE_MEDIA_EXTENSIONS.contains(&extension.as_str());
-        let is_allowed_media_type = content_type
-            .as_deref()
-            .is_some_and(|value| value.starts_with("image/") || value.starts_with("video/"));
-        if !is_allowed_extension && !is_allowed_media_type {
-            return Err(AppError::BadRequest("Allowed media types: images and videos".to_string()));
-        }
-        let data = field
-            .bytes()
-            .await
-            .map_err(|why| AppError::MultipartError(format!("Failed to read media data: {why}")))?
-            .to_vec();
-        if data.is_empty() {
-            return Err(AppError::BadRequest("Media file is empty".to_string()));
-        }
-        return Ok((extension, data));
+    else {
+        return Err(AppError::BadRequest("No media file uploaded".to_string()));
+    };
+
+    let content_type = field.content_type().map(str::to_string);
+    let file_name = field
+        .file_name()
+        .map_or_else(|| "media".to_string(), str::to_string);
+    let extension = file_name
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .filter(|value| {
+            value
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric())
+                && value.len() <= 10
+        })
+        .ok_or_else(|| AppError::BadRequest("Media file must have an extension".to_string()))?;
+    let is_allowed_extension = INSTANCE_MEDIA_EXTENSIONS.contains(&extension.as_str());
+    let is_allowed_media_type = content_type
+        .as_deref()
+        .is_some_and(|value| value.starts_with("image/") || value.starts_with("video/"));
+    if !is_allowed_extension && !is_allowed_media_type {
+        return Err(AppError::BadRequest(
+            "Allowed media types: images and videos".to_string(),
+        ));
     }
 
-    Err(AppError::BadRequest("No media file uploaded".to_string()))
+    let data = field
+        .bytes()
+        .await
+        .map_err(|why| AppError::MultipartError(format!("Failed to read media data: {why}")))?
+        .to_vec();
+    if data.is_empty() {
+        return Err(AppError::BadRequest("Media file is empty".to_string()));
+    }
+
+    Ok((extension, data))
 }
 
 async fn remove_existing_media_slot(media_dir: &Path, slot: &str) -> ResponseResult<()> {
@@ -1705,7 +1793,9 @@ async fn remove_existing_media_slot(media_dir: &Path, slot: &str) -> ResponseRes
 
 async fn find_media_file(media_dir: &Path, slot: &str) -> ResponseResult<PathBuf> {
     if !media_dir.exists() {
-        return Err(AppError::FileNotFound("Instance media not found".to_string()));
+        return Err(AppError::FileNotFound(
+            "Instance media not found".to_string(),
+        ));
     }
     let mut entries = fs::read_dir(media_dir).await.map_err(AppError::FileIo)?;
     while let Some(entry) = entries.next_entry().await.map_err(AppError::FileIo)? {
@@ -1714,11 +1804,17 @@ async fn find_media_file(media_dir: &Path, slot: &str) -> ResponseResult<PathBuf
             return Ok(path);
         }
     }
-    Err(AppError::FileNotFound("Instance media not found".to_string()))
+    Err(AppError::FileNotFound(
+        "Instance media not found".to_string(),
+    ))
 }
 fn normalize_code(value: &str) -> ResponseResult<String> {
     let code = value.trim().replace('-', "").to_ascii_uppercase();
-    if code.len() < 6 || !code.chars().all(|character| character.is_ascii_alphanumeric()) {
+    if code.len() < 6
+        || !code
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    {
         return Err(AppError::BadRequest("Invalid code format".to_string()));
     }
     Ok(code)
@@ -1733,7 +1829,7 @@ fn generate_code() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let seed = nanos ^ ((std::process::id() as u128) << 32) ^ counter as u128;
+    let seed = nanos ^ (u128::from(std::process::id()) << 32) ^ u128::from(counter);
     let alphabet = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let mut value = seed;
     let mut code = String::with_capacity(10);
@@ -1766,7 +1862,11 @@ trait EmptyStringFallback {
 
 impl EmptyStringFallback for String {
     fn if_empty(self, fallback: &str) -> String {
-        if self.is_empty() { fallback.to_string() } else { self }
+        if self.is_empty() {
+            fallback.to_string()
+        } else {
+            self
+        }
     }
 }
 fn get_mrpack_path(config: &Config) -> PathBuf {
@@ -1785,8 +1885,7 @@ fn validate_file_extension(filename: &str) -> ResponseResult<()> {
             got: filename
                 .rsplit('.')
                 .next()
-                .map(|s| format!(".{}", s))
-                .unwrap_or_else(|| "no extension".to_string()),
+                .map_or_else(|| "no extension".to_string(), |s| format!(".{s}")),
         });
     }
     Ok(())
@@ -1799,8 +1898,7 @@ fn validate_mod_file_extension(filename: &str) -> ResponseResult<()> {
             got: filename
                 .rsplit('.')
                 .next()
-                .map(|s| format!(".{}", s))
-                .unwrap_or_else(|| "no extension".to_string()),
+                .map_or_else(|| "no extension".to_string(), |s| format!(".{s}")),
         });
     }
     Ok(())
@@ -2058,9 +2156,7 @@ fn rewrite_mrpack_archive_inner<R: Read + std::io::Seek>(
             })?;
             writer
                 .start_file(MODRINTH_INDEX, file_options)
-                .map_err(|why| {
-                    AppError::FileIo(std::io::Error::new(std::io::ErrorKind::Other, why))
-                })?;
+                .map_err(|why| AppError::FileIo(std::io::Error::other(why)))?;
             writer.write_all(&index_json).map_err(AppError::FileIo)?;
             continue;
         }
@@ -2068,15 +2164,13 @@ fn rewrite_mrpack_archive_inner<R: Read + std::io::Seek>(
         if entry_name.ends_with('/') {
             writer
                 .add_directory(entry_name, directory_options)
-                .map_err(|why| {
-                    AppError::FileIo(std::io::Error::new(std::io::ErrorKind::Other, why))
-                })?;
+                .map_err(|why| AppError::FileIo(std::io::Error::other(why)))?;
             continue;
         }
 
         writer
             .start_file(entry_name, file_options)
-            .map_err(|why| AppError::FileIo(std::io::Error::new(std::io::ErrorKind::Other, why)))?;
+            .map_err(|why| AppError::FileIo(std::io::Error::other(why)))?;
         std::io::copy(&mut entry, &mut writer).map_err(AppError::FileIo)?;
     }
 
@@ -2084,7 +2178,7 @@ fn rewrite_mrpack_archive_inner<R: Read + std::io::Seek>(
         validate_archive_path(path)?;
         writer
             .start_file(path, file_options)
-            .map_err(|why| AppError::FileIo(std::io::Error::new(std::io::ErrorKind::Other, why)))?;
+            .map_err(|why| AppError::FileIo(std::io::Error::other(why)))?;
         writer.write_all(data).map_err(AppError::FileIo)?;
         tracing::info!(
             "Added mod override entry: {path}{}",
@@ -2104,10 +2198,9 @@ fn rewrite_mrpack_archive_inner<R: Read + std::io::Seek>(
 
     writer
         .finish()
-        .map_err(|why| AppError::FileIo(std::io::Error::new(std::io::ErrorKind::Other, why)))?;
+        .map_err(|why| AppError::FileIo(std::io::Error::other(why)))?;
     Ok(())
 }
-
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -2255,23 +2348,30 @@ pub async fn social_snapshot(
         .unwrap_or("Invitado")
         .to_string();
     let now = unix_timestamp_string();
-    let profile = store.profiles.entry(user_id.clone()).or_insert_with(|| SocialProfile {
-        id: user_id.clone(),
-        username: username.clone(),
-        avatar_url: None,
-        skin_url: None,
-        bio: Some("Perfil publico de HexaCore.".to_string()),
-        rank: "Miembro".to_string(),
-        country: None,
-        favorite_instance: Some("Carbonz Instance".to_string()),
-        hours_played: 0.0,
-    }).clone();
-    store.presence.entry(user_id.clone()).or_insert(PresenceEntry {
-        user_id: user_id.clone(),
-        username: username.clone(),
-        status: "online".to_string(),
-        instance: None,
-    });
+    let profile = store
+        .profiles
+        .entry(user_id.clone())
+        .or_insert_with(|| SocialProfile {
+            id: user_id.clone(),
+            username: username.clone(),
+            avatar_url: None,
+            skin_url: None,
+            bio: Some("Perfil publico de HexaCore.".to_string()),
+            rank: "Miembro".to_string(),
+            country: None,
+            favorite_instance: Some("Carbonz Instance".to_string()),
+            hours_played: 0.0,
+        })
+        .clone();
+    store
+        .presence
+        .entry(user_id.clone())
+        .or_insert_with(|| PresenceEntry {
+            user_id: user_id.clone(),
+            username: username.clone(),
+            status: "online".to_string(),
+            instance: None,
+        });
     save_social_store(&config, &store).await?;
 
     let mut presence: Vec<_> = store.presence.values().cloned().collect();
@@ -2279,17 +2379,58 @@ pub async fn social_snapshot(
     Ok(Json(SocialSnapshot {
         profile,
         friends: demo_friends(&now),
-        requests: vec![FriendRequest { id: "req-welcome".to_string(), from_username: "HexaCore Staff".to_string(), created_at: now.clone() }],
+        requests: vec![FriendRequest {
+            id: "req-welcome".to_string(),
+            from_username: "HexaCore Staff".to_string(),
+            created_at: now.clone(),
+        }],
         chats: vec![
-            ChatPreview { id: "official".to_string(), title: "Canal oficial".to_string(), kind: "channel".to_string(), last_message: "Noticias y avisos del servidor.".to_string(), unread: 1 },
-            ChatPreview { id: "staff-news".to_string(), title: "Actualizaciones".to_string(), kind: "channel".to_string(), last_message: "El launcher social ya esta activo.".to_string(), unread: 0 },
+            ChatPreview {
+                id: "official".to_string(),
+                title: "Canal oficial".to_string(),
+                kind: "channel".to_string(),
+                last_message: "Noticias y avisos del servidor.".to_string(),
+                unread: 1,
+            },
+            ChatPreview {
+                id: "staff-news".to_string(),
+                title: "Actualizaciones".to_string(),
+                kind: "channel".to_string(),
+                last_message: "El launcher social ya esta activo.".to_string(),
+                unread: 0,
+            },
         ],
         feed: vec![
-            ActivityEntry { id: "feed-social".to_string(), title: "Plataforma social".to_string(), body: "Perfiles, amigos, clanes y presencia conectados al launcher.".to_string(), created_at: now.clone() },
-            ActivityEntry { id: "feed-integrity".to_string(), title: "Integridad activa".to_string(), body: "El launcher reporta verificaciones antes de iniciar Minecraft.".to_string(), created_at: now.clone() },
+            ActivityEntry {
+                id: "feed-social".to_string(),
+                title: "Plataforma social".to_string(),
+                body: "Perfiles, amigos, clanes y presencia conectados al launcher.".to_string(),
+                created_at: now.clone(),
+            },
+            ActivityEntry {
+                id: "feed-integrity".to_string(),
+                title: "Integridad activa".to_string(),
+                body: "El launcher reporta verificaciones antes de iniciar Minecraft.".to_string(),
+                created_at: now.clone(),
+            },
         ],
-        clans: vec![ClanSummary { id: "hexacore".to_string(), name: "HexaCore".to_string(), tag: "HEX".to_string(), logo_url: None, role: "Miembro".to_string(), members: 1 + presence.len() as u32, wins: 0 }],
-        invites: vec![InviteLink { code: "HEX-PLAY".to_string(), target: "Carbonz Instance".to_string(), uses: 0, max_uses: Some(50) }],
+        clans: vec![ClanSummary {
+            id: "hexacore".to_string(),
+            name: "HexaCore".to_string(),
+            tag: "HEX".to_string(),
+            logo_url: None,
+            role: "Miembro".to_string(),
+            members: u32::try_from(presence.len())
+                .unwrap_or(u32::MAX)
+                .saturating_add(1),
+            wins: 0,
+        }],
+        invites: vec![InviteLink {
+            code: "HEX-PLAY".to_string(),
+            target: "Carbonz Instance".to_string(),
+            uses: 0,
+            max_uses: Some(50),
+        }],
         presence,
     }))
 }
@@ -2302,23 +2443,29 @@ pub async fn update_social_presence(
     let mut store = load_social_store(&config).await?;
     let user_id = clean_social_id(&payload.user_id);
     let instance = payload.instance.filter(|value| !value.trim().is_empty());
-    store.presence.insert(user_id.clone(), PresenceEntry {
-        user_id: user_id.clone(),
-        username: clean_username(&payload.username),
-        status: normalize_presence_status(&payload.status),
-        instance: instance.clone(),
-    });
-    store.profiles.entry(user_id.clone()).or_insert_with(|| SocialProfile {
-        id: user_id,
-        username: clean_username(&payload.username),
-        avatar_url: None,
-        skin_url: None,
-        bio: Some("Perfil publico de HexaCore.".to_string()),
-        rank: "Miembro".to_string(),
-        country: None,
-        favorite_instance: instance,
-        hours_played: 0.0,
-    });
+    store.presence.insert(
+        user_id.clone(),
+        PresenceEntry {
+            user_id: user_id.clone(),
+            username: clean_username(&payload.username),
+            status: normalize_presence_status(&payload.status),
+            instance: instance.clone(),
+        },
+    );
+    store
+        .profiles
+        .entry(user_id.clone())
+        .or_insert_with(|| SocialProfile {
+            id: user_id,
+            username: clean_username(&payload.username),
+            avatar_url: None,
+            skin_url: None,
+            bio: Some("Perfil publico de HexaCore.".to_string()),
+            rank: "Miembro".to_string(),
+            country: None,
+            favorite_instance: instance,
+            hours_played: 0.0,
+        });
     save_social_store(&config, &store).await?;
     Ok(Json(ApiResponse::success("Presence updated")))
 }
@@ -2331,23 +2478,42 @@ pub async fn report_integrity(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await.map_err(AppError::FileIo)?;
     }
-    let line = serde_json::to_string(&payload)
-        .map_err(|why| AppError::Internal(format!("Failed to serialize integrity report: {why}")))?;
+    let line = serde_json::to_string(&payload).map_err(|why| {
+        AppError::Internal(format!("Failed to serialize integrity report: {why}"))
+    })?;
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .await
         .map_err(AppError::FileIo)?;
-    file.write_all(line.as_bytes()).await.map_err(AppError::FileIo)?;
+    file.write_all(line.as_bytes())
+        .await
+        .map_err(AppError::FileIo)?;
     file.write_all(b"\n").await.map_err(AppError::FileIo)?;
     Ok(Json(ApiResponse::success("Integrity report stored")))
 }
 
 fn demo_friends(now: &str) -> Vec<FriendEntry> {
     vec![
-        FriendEntry { id: "alex".to_string(), username: "Alex".to_string(), rank: "Veterano".to_string(), status: "inGame".to_string(), playing: Some("Carbonz Instance".to_string()), last_seen: now.to_string(), joinable: true },
-        FriendEntry { id: "nora".to_string(), username: "Nora".to_string(), rank: "Builder".to_string(), status: "online".to_string(), playing: None, last_seen: now.to_string(), joinable: false },
+        FriendEntry {
+            id: "alex".to_string(),
+            username: "Alex".to_string(),
+            rank: "Veterano".to_string(),
+            status: "inGame".to_string(),
+            playing: Some("Carbonz Instance".to_string()),
+            last_seen: now.to_string(),
+            joinable: true,
+        },
+        FriendEntry {
+            id: "nora".to_string(),
+            username: "Nora".to_string(),
+            rank: "Builder".to_string(),
+            status: "online".to_string(),
+            playing: None,
+            last_seen: now.to_string(),
+            joinable: false,
+        },
     ]
 }
 
@@ -2386,13 +2552,19 @@ fn get_integrity_reports_path(config: &Config) -> PathBuf {
 
 fn clean_username(value: &str) -> String {
     let trimmed = value.trim();
-    if trimmed.is_empty() { "Invitado".to_string() } else { trimmed.to_string() }
+    if trimmed.is_empty() {
+        "Invitado".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn clean_social_id(value: &str) -> String {
     let cleaned: String = value
         .chars()
-        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ':'))
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ':')
+        })
         .take(96)
         .collect();
     cleaned.if_empty("guest")
@@ -2408,8 +2580,10 @@ fn normalize_presence_status(value: &str) -> String {
 fn unix_timestamp_string() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_string())
+        .map_or_else(
+            |_| "0".to_string(),
+            |duration| duration.as_secs().to_string(),
+        )
 }
 #[cfg(test)]
 mod tests {
@@ -2521,6 +2695,32 @@ mod tests {
         assert!(!constant_time_compare(b"hello world", b"hello"));
         assert!(!constant_time_compare(b"a", b""));
     }
+
+    #[test]
+    fn instance_flags_preserve_the_flat_json_schema() {
+        let value = serde_json::json!({
+            "id": "main",
+            "name": "Main",
+            "is_public": true,
+            "download_enabled": false,
+            "access_enabled": true,
+            "is_main": true,
+            "whitelist": [],
+            "media": {}
+        });
+
+        let instance: StoredInstance = serde_json::from_value(value).unwrap();
+        assert!(instance.visibility.is_public);
+        assert!(instance.visibility.is_main);
+        assert!(!instance.availability.download_enabled);
+        assert!(instance.availability.access_enabled);
+
+        let serialized = serde_json::to_value(instance).unwrap();
+        assert_eq!(serialized["is_public"], true);
+        assert_eq!(serialized["download_enabled"], false);
+        assert_eq!(serialized["access_enabled"], true);
+        assert_eq!(serialized["is_main"], true);
+    }
 }
 
 const MAINTENANCE_DEFAULT_MESSAGE: &str = "Membership to instances is restricted at this moment. \
@@ -2594,10 +2794,15 @@ async fn save_maintenance(config: &Config, store: &MaintenanceConfig) -> Respons
         .map_err(AppError::FileIo)?;
     let path = maintenance_store_path(config);
     let temp_path = path.with_extension("tmp");
-    let data = serde_json::to_vec_pretty(store)
-        .map_err(|why| AppError::Internal(format!("Failed to serialize maintenance store: {why}")))?;
-    fs::write(&temp_path, data).await.map_err(AppError::FileIo)?;
-    fs::rename(&temp_path, &path).await.map_err(AppError::FileIo)?;
+    let data = serde_json::to_vec_pretty(store).map_err(|why| {
+        AppError::Internal(format!("Failed to serialize maintenance store: {why}"))
+    })?;
+    fs::write(&temp_path, data)
+        .await
+        .map_err(AppError::FileIo)?;
+    fs::rename(&temp_path, &path)
+        .await
+        .map_err(AppError::FileIo)?;
     Ok(())
 }
 
@@ -2610,10 +2815,7 @@ fn normalize_nick(raw: &str) -> Option<String> {
     if lower.len() < 3 || lower.len() > 16 {
         return None;
     }
-    if !lower
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if !lower.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return None;
     }
     Some(lower)
@@ -2652,9 +2854,8 @@ pub async fn check_maintenance(
         }));
     }
 
-    let nick = match normalize_nick(&payload.username) {
-        Some(n) => n,
-        None => return Err(AppError::Validation("invalid username".to_string())),
+    let Some(nick) = normalize_nick(&payload.username) else {
+        return Err(AppError::Validation("invalid username".to_string()));
     };
 
     let is_premium = payload.account_type.eq_ignore_ascii_case("premium");
@@ -2669,7 +2870,7 @@ pub async fn check_maintenance(
     if store.premium_only && !is_premium {
         return Ok(Json(MaintenanceCheckResponse {
             allowed: false,
-            reason: Some(store.message.clone()),
+            reason: Some(store.message),
         }));
     }
 
@@ -2682,7 +2883,7 @@ pub async fn check_maintenance(
 
     Ok(Json(MaintenanceCheckResponse {
         allowed: false,
-        reason: Some(store.message.clone()),
+        reason: Some(store.message),
     }))
 }
 
@@ -2734,9 +2935,8 @@ pub async fn add_whitelist_entry(
     AxumPath(nick): AxumPath<String>,
     Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
 ) -> ResponseResult<Json<MaintenanceStatusPublic>> {
-    let n = normalize_nick(&nick).ok_or_else(|| {
-        AppError::Validation("invalid nick (3-16 chars, [a-z0-9_])".to_string())
-    })?;
+    let n = normalize_nick(&nick)
+        .ok_or_else(|| AppError::Validation("invalid nick (3-16 chars, [a-z0-9_])".to_string()))?;
     let _guard = maintenance_store_lock().lock().await;
     let mut store = load_maintenance(&config).await?;
     if !store.whitelist.contains(&n) {
@@ -2752,9 +2952,8 @@ pub async fn remove_whitelist_entry(
     AxumPath(nick): AxumPath<String>,
     Extension(tx): Extension<broadcast::Sender<MaintenanceConfig>>,
 ) -> ResponseResult<Json<MaintenanceStatusPublic>> {
-    let n = normalize_nick(&nick).ok_or_else(|| {
-        AppError::Validation("invalid nick (3-16 chars, [a-z0-9_])".to_string())
-    })?;
+    let n = normalize_nick(&nick)
+        .ok_or_else(|| AppError::Validation("invalid nick (3-16 chars, [a-z0-9_])".to_string()))?;
     let _guard = maintenance_store_lock().lock().await;
     let mut store = load_maintenance(&config).await?;
     let before = store.whitelist.len();
@@ -2777,14 +2976,14 @@ pub async fn maintenance_stream(
 
     let rx = tx.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|result| {
-        match result {
-            Ok(config) => {
+        result.map_or_else(
+            |_| None,
+            |config| {
                 let public = MaintenanceStatusPublic::from(&config);
                 let payload = serde_json::to_string(&public).unwrap_or_default();
                 Some(Ok(Event::default().data(payload)))
-            }
-            Err(_) => None,
-        }
+            },
+        )
     });
 
     let initial_payload = serde_json::to_string(&initial_public).unwrap_or_default();
@@ -2797,5 +2996,3 @@ pub async fn maintenance_stream(
             .text("keep-alive"),
     )
 }
-
-

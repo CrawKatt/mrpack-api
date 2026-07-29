@@ -1,6 +1,6 @@
 use crate::error::AppError;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand::Rng;
+use argon2::password_hash::rand_core::{OsRng, RngCore as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -16,7 +16,6 @@ const TOKEN_BYTES: usize = 32;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredSession {
-    token_hash: String,
     username: String,
     created_at: u64,
     expires_at: u64,
@@ -49,7 +48,7 @@ impl SessionManager {
     ) -> Result<(String, u64), AppError> {
         let _guard = self.lock.lock().await;
         let mut store = self.load().await?;
-        self.purge_expired(&mut store);
+        Self::purge_expired(&mut store);
 
         let raw_token = generate_token();
         let token_hash = hash_token(&raw_token);
@@ -64,7 +63,6 @@ impl SessionManager {
         store.sessions.insert(
             token_hash.clone(),
             StoredSession {
-                token_hash,
                 username: username.to_string(),
                 created_at: now,
                 expires_at,
@@ -91,7 +89,7 @@ impl SessionManager {
 
         if session.expires_at <= now {
             store.sessions.remove(&token_hash);
-            let _ = self.save(&store).await;
+            self.save(&store).await?;
             return Ok(None);
         }
 
@@ -120,7 +118,8 @@ impl SessionManager {
         let content = tokio::fs::read_to_string(&self.path)
             .await
             .map_err(AppError::FileIo)?;
-        Ok(serde_json::from_str(&content).unwrap_or_default())
+        serde_json::from_str(&content)
+            .map_err(|why| AppError::Internal(format!("Invalid session store: {why}")))
     }
 
     async fn save(&self, store: &SessionStore) -> Result<(), AppError> {
@@ -132,7 +131,7 @@ impl SessionManager {
         atomic_write_json(&self.path, store).await
     }
 
-    fn purge_expired(&self, store: &mut SessionStore) {
+    fn purge_expired(store: &mut SessionStore) {
         let now = now_unix();
         store.sessions.retain(|_, session| session.expires_at > now);
     }
@@ -143,9 +142,9 @@ pub fn global_sessions(storage_dir: &Path) -> &'static SessionManager {
     SESSIONS.get_or_init(|| SessionManager::new(storage_dir.to_path_buf()))
 }
 
-fn generate_token() -> String {
+pub fn generate_token() -> String {
     let mut bytes = [0u8; TOKEN_BYTES];
-    rand::rng().fill_bytes(&mut bytes);
+    OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
@@ -161,7 +160,10 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
-pub async fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
+pub async fn atomic_write_json<T>(path: &Path, value: &T) -> Result<(), AppError>
+where
+    T: Serialize + Sync,
+{
     let data = serde_json::to_vec_pretty(value)
         .map_err(|why| AppError::Internal(format!("Failed to serialize store: {why}")))?;
     let temp = path.with_extension("tmp");

@@ -1,5 +1,5 @@
 import { Copy } from "lucide-react";
-import { useAlert } from "../../components/Alert";
+import { useAlert } from "../../components/useAlert";
 import { useClipboard } from "../../hooks/useClipboard";
 import { useI18n } from "../../i18n/useI18n";
 import type { InstanceCode } from "../../types/api";

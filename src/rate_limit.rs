@@ -30,7 +30,12 @@ pub struct RateLimiter {
 }
 
 impl RateLimiter {
-    pub fn new(max_failures: u32, lockout: Duration, max_per_window: u32, window: Duration) -> Self {
+    pub fn new(
+        max_failures: u32,
+        lockout: Duration,
+        max_per_window: u32,
+        window: Duration,
+    ) -> Self {
         Self {
             buckets: Mutex::new(HashMap::new()),
             max_failures,
@@ -41,13 +46,18 @@ impl RateLimiter {
     }
 
     pub fn check(&self, key: &str) -> Result<(), u64> {
-        let mut map = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .buckets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let bucket = map.entry(key.to_string()).or_default();
         let now = Instant::now();
 
         if let Some(until) = bucket.locked_until {
             if now < until {
-                return Err((until - now).as_secs().max(1));
+                let retry_after = (until - now).as_secs().max(1);
+                drop(map);
+                return Err(retry_after);
             }
             bucket.locked_until = None;
             bucket.failures = 0;
@@ -62,14 +72,20 @@ impl RateLimiter {
             let remaining = self
                 .window
                 .saturating_sub(now.duration_since(bucket.window_start));
-            return Err(remaining.as_secs().max(1));
+            let retry_after = remaining.as_secs().max(1);
+            drop(map);
+            return Err(retry_after);
         }
 
+        drop(map);
         Ok(())
     }
 
     pub fn record_success(&self, key: &str) {
-        let mut map = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .buckets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(bucket) = map.get_mut(key) {
             bucket.failures = 0;
             bucket.locked_until = None;
@@ -78,7 +94,10 @@ impl RateLimiter {
     }
 
     pub fn record_failure(&self, key: &str) {
-        let mut map = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .buckets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let bucket = map.entry(key.to_string()).or_default();
         let now = Instant::now();
 
@@ -92,10 +111,14 @@ impl RateLimiter {
         if bucket.failures >= self.max_failures {
             bucket.locked_until = Some(now + self.lockout);
         }
+        drop(map);
     }
 
     pub fn record_hit(&self, key: &str) {
-        let mut map = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .buckets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let bucket = map.entry(key.to_string()).or_default();
         let now = Instant::now();
         if now.duration_since(bucket.window_start) > self.window {
@@ -103,6 +126,7 @@ impl RateLimiter {
             bucket.window_count = 0;
         }
         bucket.window_count = bucket.window_count.saturating_add(1);
+        drop(map);
     }
 }
 
@@ -153,7 +177,5 @@ pub fn client_ip_from_headers(
         return real_ip.to_string();
     }
 
-    fallback
-        .map(|addr| addr.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+    fallback.map_or_else(|| "unknown".to_string(), |addr| addr.ip().to_string())
 }

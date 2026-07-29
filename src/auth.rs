@@ -1,7 +1,7 @@
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     extract::{Request, State},
-    http::{HeaderMap, HeaderName, header},
+    http::{HeaderMap, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -11,16 +11,13 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::rate_limit::{client_ip_from_headers, login_limiter};
 use crate::sessions::global_sessions;
-use crate::utils::constant_time_compare;
-
-const DOWNLOAD_TOKEN_HEADER: HeaderName = HeaderName::from_static("x-download-token");
 
 pub async fn auth_middleware(
     State(state): State<Arc<Config>>,
     request: Request,
     next: Next,
 ) -> Response {
-    match verify_admin_request(request.headers(), &state).await {
+    match verify_admin_session(request.headers(), &state).await {
         Ok(true) => {
             tracing::debug!("Admin authentication successful");
             next.run(request).await
@@ -69,8 +66,7 @@ pub async fn maintenance_auth_middleware(
         }
         Err(why) => {
             tracing::error!("Maintenance authentication error: {why}");
-            AppError::Unauthorized("Maintenance authentication error".to_string())
-                .into_response()
+            AppError::Unauthorized("Maintenance authentication error".to_string()).into_response()
         }
     }
 }
@@ -88,95 +84,41 @@ pub async fn https_middleware(
     AppError::Forbidden("HTTPS is required".to_string()).into_response()
 }
 
-pub async fn verify_admin_request(headers: &HeaderMap, config: &Config) -> anyhow::Result<bool> {
-    if let Some(token) = bearer_token(headers) {
-        let sessions = global_sessions(&config.storage.directory);
-        if sessions.validate_session(token).await?.is_some() {
-            return Ok(true);
-        }
-    }
-
-    if config.security.allow_basic_admin {
-        return verify_admin_auth(headers, config);
-    }
-
-    Ok(false)
-}
-
-pub fn verify_admin_auth(headers: &HeaderMap, config: &Config) -> anyhow::Result<bool> {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|header| header.to_str().ok());
-
-    let Some(auth_value) = auth_header else {
-        tracing::warn!("Authentication failed: missing Authorization header");
+pub async fn verify_admin_session(headers: &HeaderMap, config: &Config) -> anyhow::Result<bool> {
+    let Some(token) = bearer_token(headers) else {
         return Ok(false);
     };
 
-    let Some(credentials) = auth_value.strip_prefix("Basic ") else {
-        return Ok(false);
-    };
-
-    verify_basic_auth(credentials, config)
+    validate_admin_session(token, config).await
 }
 
 pub async fn verify_download_auth(headers: &HeaderMap, config: &Config) -> anyhow::Result<bool> {
-    if verify_admin_request(headers, config).await? {
-        return Ok(true);
-    }
-
-    if matches!(verify_admin_auth(headers, config), Ok(true)) {
-        return Ok(true);
-    }
-
-    let Some(token) = bearer_token(headers).or_else(|| custom_download_token(headers)) else {
+    let Some(token) = bearer_token(headers) else {
         return Ok(false);
     };
+
+    if validate_admin_session(token, config).await? {
+        return Ok(true);
+    }
 
     verify_download_token(token, config)
 }
 
 pub async fn verify_maintenance_auth(headers: &HeaderMap, config: &Config) -> anyhow::Result<bool> {
-    if verify_admin_request(headers, config).await? {
-        return Ok(true);
-    }
-
-    if matches!(verify_admin_auth(headers, config), Ok(true)) {
-        return Ok(true);
-    }
-
     let Some(token) = bearer_token(headers) else {
         return Ok(false);
     };
 
+    if validate_admin_session(token, config).await? {
+        return Ok(true);
+    }
+
     verify_maintenance_token(token, config)
 }
 
-fn verify_basic_auth(encoded_credentials: &str, config: &Config) -> anyhow::Result<bool> {
-    let decoded = base64_decode(encoded_credentials)?;
-    let credentials_str = String::from_utf8(decoded)
-        .map_err(|why| anyhow::anyhow!("Invalid UTF-8 in credentials: {why}"))?;
-
-    let parts: Vec<&str> = credentials_str.splitn(2, ':').collect();
-    if parts.len() != 2 {
-        anyhow::bail!("Invalid credentials format");
-    }
-
-    let username = parts[0];
-    let password = parts[1];
-
-    let username_matches =
-        constant_time_compare(username.as_bytes(), config.auth.username.as_bytes());
-
-    let password_hash = PasswordHash::new(&config.auth.password_hash)
-        .map_err(|why| anyhow::anyhow!("Invalid password hash format: {why}"))?;
-
-    let argon2 = Argon2::default();
-    let password_ok = argon2
-        .verify_password(password.as_bytes(), &password_hash)
-        .is_ok();
-
-    Ok(username_matches && password_ok)
+async fn validate_admin_session(token: &str, config: &Config) -> anyhow::Result<bool> {
+    let sessions = global_sessions(&config.storage.directory);
+    Ok(sessions.validate_session(token).await?.is_some())
 }
 
 fn verify_download_token(token: &str, config: &Config) -> anyhow::Result<bool> {
@@ -190,10 +132,9 @@ fn verify_download_token(token: &str, config: &Config) -> anyhow::Result<bool> {
 
     let argon2 = Argon2::default();
 
-    match argon2.verify_password(token.as_bytes(), &password_hash) {
-        Ok(_) => Ok(true),
-        Err(_) => Ok(false),
-    }
+    Ok(argon2
+        .verify_password(token.as_bytes(), &password_hash)
+        .is_ok())
 }
 
 fn verify_maintenance_token(token: &str, config: &Config) -> anyhow::Result<bool> {
@@ -209,26 +150,18 @@ fn verify_maintenance_token(token: &str, config: &Config) -> anyhow::Result<bool
 
     let argon2 = Argon2::default();
 
-    match argon2.verify_password(token.as_bytes(), &password_hash) {
-        Ok(_) => Ok(true),
-        Err(_) => Ok(false),
-    }
+    Ok(argon2
+        .verify_password(token.as_bytes(), &password_hash)
+        .is_ok())
 }
 
 pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)
         .and_then(|header| header.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-}
-
-fn custom_download_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(DOWNLOAD_TOKEN_HEADER)
-        .and_then(|header| header.to_str().ok())
-        .map(str::trim)
+        .and_then(|value| value.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
+        .map(|(_, token)| token.trim())
         .filter(|token| !token.is_empty())
 }
 
@@ -261,14 +194,6 @@ fn request_is_https(request: &Request) -> bool {
         })
 }
 
-fn base64_decode(input: &str) -> anyhow::Result<Vec<u8>> {
-    use base64::{Engine as _, engine::general_purpose};
-
-    general_purpose::STANDARD
-        .decode(input)
-        .map_err(|why| anyhow::anyhow!("Base64 decode error: {why}"))
-}
-
 pub fn check_login_rate_limit(headers: &HeaderMap) -> Result<(), AppError> {
     let ip = client_ip_from_headers(headers, None);
     login_limiter()
@@ -289,24 +214,27 @@ pub fn record_login_failure(headers: &HeaderMap) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
 
     #[test]
-    fn test_constant_time_compare() {
-        assert!(constant_time_compare(b"hello", b"hello"));
-        assert!(!constant_time_compare(b"hello", b"world"));
-        assert!(!constant_time_compare(b"hello", b"hello world"));
+    fn bearer_token_accepts_case_insensitive_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("bearer test-token"),
+        );
+
+        assert_eq!(bearer_token(&headers), Some("test-token"));
     }
 
     #[test]
-    fn test_base64_decode() {
-        let encoded = "aGVsbG86d29ybGQ=";
-        let decoded = base64_decode(encoded).unwrap();
-        assert_eq!(decoded, b"hello:world");
-    }
+    fn bearer_token_rejects_other_schemes() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Basic dGVzdDp0ZXN0"),
+        );
 
-    #[test]
-    fn test_base64_decode_invalid() {
-        let invalid = "not-valid-base64!!!";
-        assert!(base64_decode(invalid).is_err());
+        assert_eq!(bearer_token(&headers), None);
     }
 }

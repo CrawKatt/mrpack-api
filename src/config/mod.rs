@@ -36,7 +36,6 @@ pub struct StorageConfig {
 pub struct SecurityConfig {
     pub require_https: bool,
     pub allowed_origins: Option<Vec<String>>,
-    pub allow_basic_admin: bool,
     pub max_crash_report_bytes: usize,
 }
 
@@ -88,13 +87,13 @@ impl Config {
                  2. Copy the complete hash (entire line after ADMIN_PASSWORD_HASH=)\n\
                  3. Update .env with the full hash\n\
                  4. Verify with: cargo run --bin verify-password",
-                &password_hash.chars().take(20).collect::<String>()
+                password_hash.chars().take(20).collect::<String>()
             );
         }
 
         if let Err(e) = PasswordHash::new(&password_hash) {
             anyhow::bail!(
-                "ADMIN_PASSWORD_HASH has an invalid format: {}\n\
+                "ADMIN_PASSWORD_HASH has an invalid format: {e}\n\
                  \n\
                  The hash structure is malformed.\n\
                  Generate a new hash with: cargo run --bin hash-password \"YourPassword\"\n\
@@ -102,8 +101,7 @@ impl Config {
                  Common issues:\n\
                  - Hash was truncated when copying\n\
                  - Extra quotes around the hash in .env\n\
-                 - Extra spaces or newlines in the hash",
-                e
+                 - Extra spaces or newlines in the hash"
             );
         }
 
@@ -129,11 +127,6 @@ impl Config {
             .parse()
             .context("REQUIRE_HTTPS must be true or false")?;
 
-        let allow_basic_admin = std::env::var("ALLOW_BASIC_ADMIN")
-            .unwrap_or_else(|_| "false".to_string())
-            .parse()
-            .context("ALLOW_BASIC_ADMIN must be true or false")?;
-
         let max_crash_report_bytes = std::env::var("MAX_CRASH_REPORT_BYTES")
             .unwrap_or_else(|_| (2 * 1024 * 1024).to_string())
             .parse()
@@ -146,11 +139,10 @@ impl Config {
         let security = SecurityConfig {
             require_https,
             allowed_origins,
-            allow_basic_admin,
             max_crash_report_bytes,
         };
 
-        let config = Config {
+        let config = Self {
             server,
             auth,
             storage,
@@ -185,13 +177,6 @@ impl Config {
                 anyhow::bail!(
                     "DOWNLOAD_TOKEN_HASH is required in production. \
                      Generate one with: cargo run --bin hash_password \"LongRandomToken\""
-                );
-            }
-
-            if self.security.allow_basic_admin {
-                tracing::warn!(
-                    "⚠️  SECURITY WARNING: ALLOW_BASIC_ADMIN is true in production. \
-                     Prefer session tokens only."
                 );
             }
         }
@@ -278,7 +263,6 @@ mod tests {
             security: SecurityConfig {
                 require_https: false,
                 allowed_origins: None,
-                allow_basic_admin: false,
                 max_crash_report_bytes: 2 * 1024 * 1024,
             },
         };
@@ -307,7 +291,6 @@ mod tests {
             security: SecurityConfig {
                 require_https: false,
                 allowed_origins: None,
-                allow_basic_admin: false,
                 max_crash_report_bytes: 2 * 1024 * 1024,
             },
         };

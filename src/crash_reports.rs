@@ -1,20 +1,19 @@
-use crate::auth::bearer_token;
 use crate::config::Config;
 use crate::error::{AppError, ResponseResult};
 use crate::rate_limit::{client_ip_from_headers, crash_report_limiter};
-use crate::sessions::atomic_write_json;
+use crate::sessions::{atomic_write_json, generate_token};
 use axum::{
     Json,
     extract::{Path as AxumPath, State},
     http::HeaderMap,
 };
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 const MAX_SUMMARY_LEN: usize = 240;
 const MAX_FIELD_LEN: usize = 128;
@@ -87,8 +86,7 @@ fn log_path(dir: &Path, id: &str) -> PathBuf {
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn clean_optional_field(value: Option<String>) -> Option<String> {
@@ -97,11 +95,9 @@ fn clean_optional_field(value: Option<String>) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-fn normalize_kind(kind: Option<String>) -> String {
+fn normalize_kind(kind: Option<&str>) -> String {
     match kind
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or("manual")
+        .map_or("manual", str::trim)
         .to_ascii_lowercase()
         .as_str()
     {
@@ -130,8 +126,8 @@ fn sanitize_log(log: &str, max_bytes: usize) -> String {
             out.push(ch);
         }
     }
-    let redacted = out
-        .lines()
+
+    out.lines()
         .map(|line| {
             let lower = line.to_ascii_lowercase();
             if lower.contains("accesstoken")
@@ -147,8 +143,7 @@ fn sanitize_log(log: &str, max_bytes: usize) -> String {
             }
         })
         .collect::<Vec<_>>()
-        .join("\n");
-    redacted
+        .join("\n")
 }
 
 pub async fn upload_crash_report(
@@ -156,8 +151,6 @@ pub async fn upload_crash_report(
     headers: HeaderMap,
     Json(payload): Json<UploadCrashReportRequest>,
 ) -> ResponseResult<Json<UploadCrashReportResponse>> {
-    let _ = bearer_token(&headers);
-
     let ip = client_ip_from_headers(&headers, None);
     crash_report_limiter()
         .check(&ip)
@@ -176,10 +169,12 @@ pub async fn upload_crash_report(
 
     let log = sanitize_log(&payload.log, max);
     if log.trim().is_empty() {
-        return Err(AppError::BadRequest("Crash log is empty after sanitization".to_string()));
+        return Err(AppError::BadRequest(
+            "Crash log is empty after sanitization".to_string(),
+        ));
     }
 
-    let id = Uuid::new_v4().to_string();
+    let id = generate_token();
     let meta = CrashReportMeta {
         id: id.clone(),
         created_at: now_unix(),
@@ -188,7 +183,7 @@ pub async fn upload_crash_report(
         os: clean_optional_field(payload.os),
         instance_id: clean_optional_field(payload.instance_id),
         instance_name: clean_optional_field(payload.instance_name),
-        kind: normalize_kind(payload.kind),
+        kind: normalize_kind(payload.kind.as_deref()),
         summary: build_summary(&log),
         size_bytes: log.len() as u64,
     };
@@ -240,7 +235,7 @@ pub async fn list_crash_reports(
         }
     }
 
-    reports.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    reports.sort_by_key(|report| Reverse(report.created_at));
     Ok(Json(CrashReportListResponse { reports }))
 }
 
@@ -257,11 +252,15 @@ pub async fn get_crash_report(
         return Err(AppError::FileNotFound("Crash report not found".to_string()));
     }
 
-    let meta_content = fs::read_to_string(meta_file).await.map_err(AppError::FileIo)?;
+    let meta_content = fs::read_to_string(meta_file)
+        .await
+        .map_err(AppError::FileIo)?;
     let meta: CrashReportMeta = serde_json::from_str(&meta_content)
         .map_err(|why| AppError::Internal(format!("Invalid crash report metadata: {why}")))?;
     let log = if log_file.exists() {
-        fs::read_to_string(log_file).await.map_err(AppError::FileIo)?
+        fs::read_to_string(log_file)
+            .await
+            .map_err(AppError::FileIo)?
     } else {
         String::new()
     };

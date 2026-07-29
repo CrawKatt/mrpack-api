@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { Save, ShieldAlert, ShieldCheck, Trash2, UserPlus, Users } from "lucide-react";
-import { useAlert } from "../../components/Alert";
+import { useAlert } from "../../components/useAlert";
 import { Button } from "../../components/Button";
 import { Input } from "../../components/Input";
-import { useConfirm } from "../../components/Modal";
+import { useConfirm } from "../../components/useConfirm";
 import { Spinner } from "../../components/Spinner";
 import { Switch } from "../../components/Switch";
 import { useI18n } from "../../i18n/useI18n";

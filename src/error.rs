@@ -32,9 +32,6 @@ pub enum AppError {
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
-    #[error("Invalid configuration: {0}")]
-    Configuration(String),
-
     #[error("Validation error: {0}")]
     Validation(String),
 
@@ -67,35 +64,27 @@ impl ErrorResponse {
             details: None,
         }
     }
-
-    fn with_details(error: impl Into<String>, details: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            error: error.into(),
-            details: Some(details.into()),
-        }
-    }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, error_message, should_log_details) = match &self {
-            AppError::FileNotFound(_) => (
+            Self::FileNotFound(_) => (
                 StatusCode::NOT_FOUND,
                 "The requested file was not found".to_string(),
                 false,
             ),
-            AppError::FileIo(_) => (
+            Self::FileIo(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to process file".to_string(),
                 true,
             ),
-            AppError::InvalidFileType { expected, got } => (
+            Self::InvalidFileType { expected, got } => (
                 StatusCode::BAD_REQUEST,
                 format!("Invalid file type: expected {expected}, got {got}"),
                 false,
             ),
-            AppError::FileTooLarge { size, max } => (
+            Self::FileTooLarge { size, max } => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!(
                     "File size ({} MB) exceeds maximum allowed size ({} MB)",
@@ -104,37 +93,36 @@ impl IntoResponse for AppError {
                 ),
                 false,
             ),
-            AppError::AuthenticationFailed(_) => (
+            Self::AuthenticationFailed(_) => (
                 StatusCode::UNAUTHORIZED,
                 "Authentication failed".to_string(),
                 true,
             ),
-            AppError::Unauthorized(_) => {
+            Self::Unauthorized(_) => {
                 tracing::warn!("Unauthorized access attempt {self}");
                 return (
                     StatusCode::UNAUTHORIZED,
-                    Json(ErrorResponse::new("Unauthorized - Invalid or missing credentials")),
-                ).into_response();
-            },
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone(), true),
-            AppError::Configuration(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Server configuration error".to_string(),
-                true,
-            ),
-            AppError::Validation(msg) => (StatusCode::BAD_REQUEST, msg.clone(), false),
-            AppError::MultipartError(_) => (
+                    Json(ErrorResponse::new(
+                        "Unauthorized - Invalid or missing credentials",
+                    )),
+                )
+                    .into_response();
+            }
+            Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone(), true),
+            Self::Validation(msg) | Self::BadRequest(msg) => {
+                (StatusCode::BAD_REQUEST, msg.clone(), false)
+            }
+            Self::MultipartError(_) => (
                 StatusCode::BAD_REQUEST,
                 "Invalid multipart form data".to_string(),
                 true,
             ),
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone(), false),
-            AppError::TooManyRequests(secs) => (
+            Self::TooManyRequests(secs) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 format!("Too many requests. Try again in {secs} seconds"),
                 true,
             ),
-            AppError::Internal(_) => (
+            Self::Internal(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "An internal server error occurred".to_string(),
                 true,
@@ -153,7 +141,7 @@ impl IntoResponse for AppError {
 
 impl From<anyhow::Error> for AppError {
     fn from(err: anyhow::Error) -> Self {
-        AppError::Internal(err.to_string())
+        Self::Internal(err.to_string())
     }
 }
 
@@ -166,13 +154,6 @@ mod tests {
         let resp = ErrorResponse::new("Test error");
         assert_eq!(resp.error, "Test error");
         assert!(resp.details.is_none());
-    }
-
-    #[test]
-    fn test_error_response_with_details() {
-        let resp = ErrorResponse::with_details("Test error", "More info");
-        assert_eq!(resp.error, "Test error");
-        assert_eq!(resp.details, Some("More info".to_string()));
     }
 
     #[test]

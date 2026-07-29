@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Button } from "./Button";
 import { X } from "lucide-react";
 import { useI18n } from "../i18n/useI18n";
+import { ConfirmContext } from "./confirmContext";
+import type { ConfirmContextValue } from "./confirmContext";
 
 interface Props {
   open: boolean;
@@ -73,14 +75,6 @@ interface ConfirmState {
   resolve: ((value: boolean) => void) | null;
 }
 
-interface ConfirmContextValue {
-  confirm: (message: ReactNode) => Promise<boolean>;
-}
-
-import { createContext, useCallback, useContext, useMemo } from "react";
-
-const ConfirmContext = createContext<ConfirmContextValue | null>(null);
-
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const { t } = useI18n();
   const [state, setState] = useState<ConfirmState>({
@@ -125,10 +119,4 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       </Modal>
     </ConfirmContext.Provider>
   );
-}
-
-export function useConfirm(): ConfirmContextValue {
-  const ctx = useContext(ConfirmContext);
-  if (!ctx) throw new Error("useConfirm must be used within a ConfirmProvider");
-  return ctx;
 }

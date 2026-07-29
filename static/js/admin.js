@@ -27,12 +27,12 @@ class AuthManager {
         this.sessionKey = 'mrpack_auth_session';
     }
 
-    getCredentials() {
-        return sessionStorage.getItem(this.sessionKey);
+    getToken() {
+        return sessionStorage.getItem(this.sessionKey) || localStorage.getItem(this.sessionKey);
     }
 
     isAuthenticated() {
-        return this.getCredentials() !== null;
+        return this.getToken() !== null;
     }
 
     redirectToLogin() {
@@ -46,8 +46,8 @@ class AuthManager {
     }
 
     getAuthHeader() {
-        const credentials = this.getCredentials();
-        return credentials ? { Authorization: `Basic ${credentials}` } : {};
+        const token = this.getToken();
+        return token ? { Authorization: `Bearer ${token}` } : {};
     }
 }
 

@@ -15,8 +15,9 @@ import {
 } from "lucide-react";
 import { Button } from "../../components/Button";
 import { ProgressBar } from "../../components/ProgressBar";
-import { useAlert } from "../../components/Alert";
-import { Modal, useConfirm } from "../../components/Modal";
+import { Modal } from "../../components/Modal";
+import { useAlert } from "../../components/useAlert";
+import { useConfirm } from "../../components/useConfirm";
 import { useI18n } from "../../i18n/useI18n";
 import { ALLOWED_MEDIA_EXTENSIONS, ALLOWED_MOD_EXTENSIONS, validateFile } from "../../lib/fileValidator";
 import {

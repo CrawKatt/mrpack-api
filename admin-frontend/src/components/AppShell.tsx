@@ -17,7 +17,7 @@ import { LangToggle } from "./LangToggle";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAuth } from "../features/auth/useAuth";
 import { useI18n } from "../i18n/useI18n";
-import { useConfirm } from "./Modal";
+import { useConfirm } from "./useConfirm";
 
 export type AppView = "dashboard" | "instances" | "modpack" | "crashes" | "maintenance" | "api";
 

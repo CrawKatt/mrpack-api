@@ -2,12 +2,17 @@
 name = "mrpack_api"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Secure API and administrative panel for distributing Modrinth modpacks"
+repository = "https://github.com/CrawKatt/mrpack_api"
+keywords = ["minecraft", "modrinth", "modpack", "axum", "api"]
+categories = ["web-programming::http-server"]
+publish = false
 
 [dependencies]
 # Web Framework
 axum = { version = "0.8.6", features = ["multipart"] }
 tokio = { version = "1.35", features = ["full"] }
-tower = "0.4"
 tower-http = { version = "0.5", features = ["fs", "trace", "cors", "set-header"] }
 
 # Serialization
@@ -21,7 +26,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # File handling
 tokio-util = { version = "0.7", features = ["io"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-zip = "6.0.0"
+zip = { version = "6.0.0", default-features = false, features = ["deflate"] }
 
 # Security - Password hashing
 argon2 = { version = "0.5", features = ["std"] }
@@ -30,18 +35,13 @@ base64 = "0.21"
 # Configuration
 dotenvy = "0.15"
 
-# Validation
-validator = { version = "0.18", features = ["derive"] }
-
 # Error handling
 anyhow = "1.0"
 thiserror = "1.0"
 
 # Misc Utils
-bon = "3.8.1"
-uuid = { version = "1.24.0", features = ["v4", "serde"] }
-rand = "0.10.2"
 hex = "0.4.3"
+num-traits = "0.2.19"
 sha2 = "0.10"
 zeroize = "1.9.0"
 

@@ -1,20 +1,14 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { Dict, Lang } from "./types";
 import { es } from "./es";
 import { en } from "./en";
+import { I18nContext } from "./context";
+import type { I18nContextValue } from "./context";
 
 const STORAGE_KEY = "mrpack_lang";
 
 const dictionaries: Record<Lang, Dict> = { es, en };
-
-interface I18nContextValue {
-  lang: Lang;
-  setLang: (lang: Lang) => void;
-  t: Dict;
-}
-
-const I18nContext = createContext<I18nContextValue | null>(null);
 
 function readInitialLang(): Lang {
   try {
@@ -46,10 +40,4 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
-}
-
-export function useI18n(): I18nContextValue {
-  const ctx = useContext(I18nContext);
-  if (!ctx) throw new Error("useI18n must be used within an I18nProvider");
-  return ctx;
 }

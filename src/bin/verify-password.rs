@@ -1,126 +1,101 @@
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
-use std::io::{self, Write};
+use anyhow::{Result, anyhow, bail};
+use argon2::{Argon2, PasswordHash, PasswordVerifier as _};
+use std::io::{self, Write as _};
 
-fn main() {
-    println!("============================================================");
-    println!("Password Verification Tool");
-    println!("============================================================");
-    println!();
-    println!("This tool helps you verify if a password matches a hash.");
-    println!();
-
-    let hash_string = if let Some(arg) = std::env::args().nth(1) {
-        arg
-    } else {
-        print!("Enter password hash from .env: ");
-        io::stdout().flush().unwrap();
-
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read hash");
-
-        input.trim().to_string()
-    };
-
-    println!();
-    println!("Step 1: Validating hash format...");
-
-    if hash_string.is_empty() {
-        eprintln!("ERROR: Hash cannot be empty");
-        std::process::exit(1);
-    }
-
-    if !hash_string.starts_with("$argon2") {
-        eprintln!("ERROR: Hash must start with $argon2");
-        eprintln!("Your hash starts with: {}", &hash_string.chars().take(10).collect::<String>());
-        eprintln!();
-        eprintln!("Expected format: $argon2id$v=19$m=19456,t=2,p=1$...");
-        std::process::exit(1);
-    }
-
-    let password_hash = match PasswordHash::new(&hash_string) {
-        Ok(h) => {
-            println!("   Hash format is VALID");
-            println!("   Algorithm: {}", h.algorithm);
-            h
-        }
-        Err(e) => {
-            eprintln!();
-            eprintln!("ERROR: Invalid hash format");
-            eprintln!("Details: {}", e);
-            eprintln!();
-            eprintln!("Common issues:");
-            eprintln!("  - Hash was truncated when copying");
-            eprintln!("  - Extra quotes around the hash");
-            eprintln!("  - Extra spaces or newlines");
-            eprintln!();
-            eprintln!("Generate a new hash with:");
-            eprintln!("  cargo run --bin hash-password YourPassword");
-            std::process::exit(1);
-        }
-    };
+fn main() -> Result<()> {
+    print_header();
+    let hash_string = std::env::args()
+        .nth(1)
+        .map_or_else(|| read_value("Enter password hash from .env: "), Ok)?;
+    let password_hash = validate_hash(&hash_string)?;
 
     println!();
     println!("Step 2: Testing password...");
-
-    print!("Enter password to test: ");
-    io::stdout().flush().unwrap();
-
-    let mut password = String::new();
-    io::stdin()
-        .read_line(&mut password)
-        .expect("Failed to read password");
-
-    let password = password.trim();
-
+    let password = read_value("Enter password to test: ")?;
     if password.is_empty() {
-        eprintln!("ERROR: Password cannot be empty");
-        std::process::exit(1);
+        bail!("Password cannot be empty");
     }
 
     println!();
     println!("Verifying...");
     println!();
 
-    let argon2 = Argon2::default();
-    match argon2.verify_password(password.as_bytes(), &password_hash) {
-        Ok(_) => {
-            println!("============================================================");
-            println!("SUCCESS: Password matches the hash!");
-            println!("============================================================");
-            println!();
-            println!("Your credentials are correct.");
-            println!();
-            println!("If authentication still fails in the API:");
-            println!("  1. Make sure username in .env is correct");
-            println!("  2. Check for extra spaces in .env file");
-            println!("  3. Restart the server after changing .env");
-            println!("  4. Try incognito mode in browser");
-            println!();
-            std::process::exit(0);
-        }
-        Err(e) => {
-            println!("============================================================");
-            println!("FAILED: Password does NOT match the hash");
-            println!("============================================================");
-            println!();
-            println!("Details: {:?}", e);
-            println!();
-            println!("This means:");
-            println!("  - You entered the wrong password, OR");
-            println!("  - The hash was generated for a different password");
-            println!();
-            println!("To fix:");
-            println!("  1. Generate a new hash:");
-            println!("     cargo run --bin hash-password YourPassword");
-            println!();
-            println!("  2. Copy the ENTIRE hash to .env");
-            println!("     ADMIN_PASSWORD_HASH=$argon2id$...");
-            println!();
-            println!("  3. NO quotes, NO extra spaces!");
-            println!();
-            std::process::exit(1);
+    match Argon2::default().verify_password(password.as_bytes(), &password_hash) {
+        Ok(()) => print_success(),
+        Err(why) => {
+            print_failure(&why);
+            bail!("Password does not match the hash");
         }
     }
+
+    Ok(())
+}
+
+fn print_header() {
+    println!("============================================================");
+    println!("Password Verification Tool");
+    println!("============================================================");
+    println!();
+    println!("This tool helps you verify if a password matches a hash.");
+    println!();
+}
+
+fn validate_hash(hash: &str) -> Result<PasswordHash<'_>> {
+    println!();
+    println!("Step 1: Validating hash format...");
+
+    if hash.is_empty() {
+        bail!("Hash cannot be empty");
+    }
+    if !hash.starts_with("$argon2") {
+        let prefix: String = hash.chars().take(10).collect();
+        bail!(
+            "Hash must start with $argon2 (received prefix: {prefix}). \
+             Expected format: $argon2id$v=19$m=19456,t=2,p=1$..."
+        );
+    }
+
+    let password_hash =
+        PasswordHash::new(hash).map_err(|why| anyhow!("Invalid hash format: {why}"))?;
+    println!("   Hash format is VALID");
+    println!("   Algorithm: {}", password_hash.algorithm);
+    Ok(password_hash)
+}
+
+fn read_value(prompt: &str) -> io::Result<String> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    Ok(value.trim().to_string())
+}
+
+fn print_success() {
+    println!("============================================================");
+    println!("SUCCESS: Password matches the hash!");
+    println!("============================================================");
+    println!();
+    println!("Your credentials are correct.");
+    println!();
+    println!("If authentication still fails in the API:");
+    println!("  1. Make sure username in .env is correct");
+    println!("  2. Check for extra spaces in .env file");
+    println!("  3. Restart the server after changing .env");
+    println!("  4. Try incognito mode in browser");
+    println!();
+}
+
+fn print_failure(why: &argon2::password_hash::Error) {
+    println!("============================================================");
+    println!("FAILED: Password does NOT match the hash");
+    println!("============================================================");
+    println!();
+    println!("Details: {why}");
+    println!();
+    println!("Generate a new hash with:");
+    println!("  cargo run --bin hash_password YourPassword");
+    println!();
+    println!("Then copy the complete ADMIN_PASSWORD_HASH value to .env.");
+    println!();
 }

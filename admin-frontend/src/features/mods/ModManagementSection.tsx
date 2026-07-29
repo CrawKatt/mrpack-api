@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { ALLOWED_MOD_EXTENSIONS, validateFile } from "../../lib/fileValidator";
-import { useAlert } from "../../components/Alert";
+import { useAlert } from "../../components/useAlert";
 import { useI18n } from "../../i18n/useI18n";
 import { Card } from "../../components/Card";
 import { Button } from "../../components/Button";

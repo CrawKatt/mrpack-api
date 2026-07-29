@@ -1,7 +1,5 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -9,8 +7,8 @@ import {
 } from "react";
 import type { ReactNode } from "react";
 import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
-
-export type AlertVariant = "success" | "error" | "info";
+import { AlertContext } from "./alertContext";
+import type { AlertContextValue, AlertVariant } from "./alertContext";
 
 interface AlertItem {
   id: number;
@@ -18,12 +16,6 @@ interface AlertItem {
   variant: AlertVariant;
   exiting?: boolean;
 }
-
-interface AlertContextValue {
-  showAlert: (message: string, variant?: AlertVariant, durationMs?: number) => void;
-}
-
-const AlertContext = createContext<AlertContextValue | null>(null);
 
 const MAX_VISIBLE = 4;
 const EXIT_MS = 180;
@@ -104,9 +96,10 @@ export function AlertProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
+    const activeTimers = timers.current;
     return () => {
-      timers.current.forEach((timer) => window.clearTimeout(timer));
-      timers.current.clear();
+      activeTimers.forEach((timer) => window.clearTimeout(timer));
+      activeTimers.clear();
     };
   }, []);
 
@@ -152,10 +145,4 @@ export function AlertProvider({ children }: { children: ReactNode }) {
       </div>
     </AlertContext.Provider>
   );
-}
-
-export function useAlert(): AlertContextValue {
-  const ctx = useContext(AlertContext);
-  if (!ctx) throw new Error("useAlert must be used within an AlertProvider");
-  return ctx;
 }
