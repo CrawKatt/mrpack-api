@@ -17,6 +17,7 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
+use axum::response::Redirect;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
@@ -51,7 +52,7 @@ async fn main() -> Result<()> {
 
     tracing::info!("🚀 Starting server on {addr}");
     tracing::info!("📦 Protected download endpoint: http://{addr}/api/download");
-    tracing::info!("🔧 Admin panel: http://{addr}/admin.html");
+    tracing::info!("🔧 Admin panel: http://{addr}/admin/");
     tracing::info!("📊 API info: http://{addr}/api/info");
     tracing::info!("");
     tracing::info!("✓ Configuration loaded successfully");
@@ -231,6 +232,7 @@ fn build_app(config: Arc<Config>) -> Result<Router> {
 
     let max_body_size = config.storage.max_file_size_mb * 1024 * 1024;
     let mut app = Router::new()
+        .route("/admin", get(|| async { Redirect::permanent("/admin/") }))
         .merge(public_routes)
         .merge(protected_launcher_routes)
         .merge(maintenance_check_routes)
