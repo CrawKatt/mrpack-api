@@ -190,6 +190,14 @@ pub struct RedeemCodeResponse {
 }
 
 #[derive(Serialize)]
+pub struct MainInstanceResponse {
+    pub success: bool,
+    pub message: String,
+    pub instance: InstanceAccess,
+    pub modpack: ModpackDetails,
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminInstanceView {
     pub id: String,
@@ -254,6 +262,13 @@ impl Default for MainPackConfig {
 pub struct GenerateCodeRequest {
     #[serde(alias = "max_uses")]
     pub max_uses: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInstanceCodeRequest {
+    #[serde(alias = "max_uses")]
+    pub max_uses: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -720,6 +735,7 @@ pub async fn generate_instance_code(
         code = generate_code();
     }
 
+    validate_code_max_uses(payload.max_uses)?;
     let instance_code = InstanceCode {
         code: code.clone(),
         instance_id,
@@ -730,6 +746,30 @@ pub async fn generate_instance_code(
     store.codes.insert(code, instance_code.clone());
     save_instance_store(&config, &store).await?;
     Ok(Json(instance_code))
+}
+
+pub async fn update_instance_code(
+    State(config): State<Arc<Config>>,
+    AxumPath((instance_id, code)): AxumPath<(String, String)>,
+    Json(payload): Json<UpdateInstanceCodeRequest>,
+) -> ResponseResult<Json<InstanceCode>> {
+    let _guard = instance_store_lock().lock().await;
+    let code = normalize_code(&code)?;
+    let max_uses = parse_code_max_uses(&payload.max_uses)?;
+    let mut store = load_instance_store(&config).await?;
+    if !store.instances.contains_key(&instance_id) {
+        return Err(AppError::FileNotFound("Instance not found".to_string()));
+    }
+
+    let instance_code = store
+        .codes
+        .get_mut(&code)
+        .filter(|code| code.instance_id == instance_id)
+        .ok_or_else(|| AppError::FileNotFound("Instance code not found".to_string()))?;
+    instance_code.max_uses = max_uses;
+    let updated = instance_code.clone();
+    save_instance_store(&config, &store).await?;
+    Ok(Json(updated))
 }
 
 pub async fn redeem_instance_code(
@@ -813,6 +853,54 @@ pub async fn redeem_instance_code(
     Ok(Json(RedeemCodeResponse {
         success: true,
         message: "Instance unlocked".to_string(),
+        instance: access,
+        modpack,
+    }))
+}
+
+pub async fn get_main_instance(
+    State(config): State<Arc<Config>>,
+) -> ResponseResult<Json<MainInstanceResponse>> {
+    let store = load_instance_store(&config).await?;
+    let instance = store
+        .instances
+        .values()
+        .find(|instance| instance.visibility.is_main)
+        .cloned()
+        .ok_or_else(|| AppError::FileNotFound("Main instance not configured".to_string()))?;
+
+    if !instance.availability.access_enabled {
+        return Err(AppError::Forbidden(
+            "La instancia principal está desactivada por el administrador".to_string(),
+        ));
+    }
+    if !instance.visibility.is_public {
+        return Err(AppError::Forbidden(
+            "La instancia principal no está marcada como pública".to_string(),
+        ));
+    }
+
+    let mut modpack =
+        modpack_details_for_path(&get_instance_mrpack_path(&config, &instance.id)).await?;
+    modpack.icon_url.clone_from(&instance.media.icon_url);
+    modpack
+        .background_url
+        .clone_from(&instance.media.background_url);
+    modpack.icon_kind.clone_from(&instance.media.icon_kind);
+    modpack
+        .background_kind
+        .clone_from(&instance.media.background_kind);
+
+    let access = InstanceAccess {
+        id: instance.id,
+        name: instance.name,
+        code: String::new(),
+        media: instance.media,
+    };
+
+    Ok(Json(MainInstanceResponse {
+        success: true,
+        message: "Main instance loaded".to_string(),
         instance: access,
         modpack,
     }))
@@ -1820,6 +1908,30 @@ fn normalize_code(value: &str) -> ResponseResult<String> {
     Ok(code)
 }
 
+fn validate_code_max_uses(max_uses: Option<u32>) -> ResponseResult<()> {
+    if max_uses == Some(0) {
+        return Err(AppError::BadRequest(
+            "Code maxUses must be at least 1 or null for unlimited".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_code_max_uses(value: &serde_json::Value) -> ResponseResult<Option<u32>> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(raw) = value.as_u64() else {
+        return Err(AppError::BadRequest(
+            "Code maxUses must be a positive integer or null".to_string(),
+        ));
+    };
+    let max_uses = u32::try_from(raw)
+        .map_err(|_| AppError::BadRequest("Code maxUses is too large".to_string()))?;
+    validate_code_max_uses(Some(max_uses))?;
+    Ok(Some(max_uses))
+}
+
 fn generate_code() -> String {
     static COUNTER: OnceLock<std::sync::atomic::AtomicU64> = OnceLock::new();
     let counter = COUNTER
@@ -2720,6 +2832,24 @@ mod tests {
         assert_eq!(serialized["download_enabled"], false);
         assert_eq!(serialized["access_enabled"], true);
         assert_eq!(serialized["is_main"], true);
+    }
+
+    #[test]
+    fn parse_code_max_uses_accepts_null_as_unlimited() {
+        assert_eq!(parse_code_max_uses(&serde_json::Value::Null).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_code_max_uses_rejects_zero() {
+        assert!(parse_code_max_uses(&serde_json::json!(0)).is_err());
+    }
+
+    #[test]
+    fn parse_code_max_uses_accepts_positive_integer() {
+        assert_eq!(
+            parse_code_max_uses(&serde_json::json!(25)).unwrap(),
+            Some(25)
+        );
     }
 }
 

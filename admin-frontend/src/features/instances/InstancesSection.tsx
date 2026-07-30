@@ -49,6 +49,9 @@ export function InstanceCard({ instance }: { instance: AdminInstanceView }) {
   const [progress, setProgress] = useState(0);
   const [showActions, setShowActions] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [codeDialogOpen, setCodeDialogOpen] = useState(false);
+  const [codeLimitInput, setCodeLimitInput] = useState("10");
+  const [codeUnlimited, setCodeUnlimited] = useState(false);
 
   const uploadModpack = useUploadInstanceModpack();
   const addMod = useAddInstanceMod();
@@ -146,8 +149,16 @@ export function InstanceCard({ instance }: { instance: AdminInstanceView }) {
   };
 
   const handleGenerateCode = () => {
-    generateCodeMutation.mutate(instance.id, {
-      onSuccess: (code) => showAlert(t.alerts.codeGenerated(code.code), "success", 10000),
+    const maxUses = codeUnlimited ? null : parseCodeLimit(codeLimitInput);
+    if (maxUses === undefined) {
+      showAlert(t.instances.code.limitInvalid, "error");
+      return;
+    }
+    generateCodeMutation.mutate({ id: instance.id, maxUses }, {
+      onSuccess: (code) => {
+        showAlert(t.alerts.codeGenerated(code.code), "success", 10000);
+        setCodeDialogOpen(false);
+      },
       onError: (error: Error) => showAlert(error.message, "error"),
     });
   };
@@ -234,7 +245,7 @@ export function InstanceCard({ instance }: { instance: AdminInstanceView }) {
           </div>
 
           <MediaSummary media={instance.media} />
-          <CodesList codes={instance.codes} />
+          <CodesList instanceId={instance.id} codes={instance.codes} />
 
           {anyPending ? (
             <div className="mt-4 flex items-center gap-2">
@@ -247,7 +258,7 @@ export function InstanceCard({ instance }: { instance: AdminInstanceView }) {
             <Button
               variant="primary"
               size="sm"
-              onClick={handleGenerateCode}
+              onClick={() => setCodeDialogOpen(true)}
               disabled={!modpackAvailable}
               loading={generateCodeMutation.isPending}
               icon={<KeyRound size={15} />}
@@ -300,6 +311,51 @@ export function InstanceCard({ instance }: { instance: AdminInstanceView }) {
         size="lg"
       >
         <InstanceModEditor instance={instance} />
+      </Modal>
+
+      <Modal
+        open={codeDialogOpen}
+        onClose={() => setCodeDialogOpen(false)}
+        title={t.instances.code.generateTitle}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setCodeDialogOpen(false)}>
+              {t.common.cancel}
+            </Button>
+            <Button onClick={handleGenerateCode} loading={generateCodeMutation.isPending}>
+              {t.instances.actions.generateCode}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+            <input
+              type="checkbox"
+              checked={codeUnlimited}
+              onChange={(event) => setCodeUnlimited(event.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+            />
+            {t.instances.code.unlimited}
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold uppercase text-gray-400">
+              {t.instances.code.limitLabel}
+            </span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={codeLimitInput}
+              disabled={codeUnlimited}
+              onChange={(event) => setCodeLimitInput(event.target.value)}
+              className="mt-1 h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm outline-none disabled:opacity-50 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+            />
+          </label>
+          <p className="text-xs leading-5 text-gray-500">
+            {t.instances.code.generateHelp}
+          </p>
+        </div>
       </Modal>
     </>
   );
@@ -397,4 +453,10 @@ function ActionButton({
       <span className="leading-4">{label}</span>
     </button>
   );
+}
+
+function parseCodeLimit(value: string): number | undefined {
+  const parsed = Number(value.trim());
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return undefined;
+  return parsed;
 }

@@ -176,6 +176,16 @@ export interface Dict {
       usesLimited: (n: number, m: number) => string;
       copy: string;
       copied: (code: string) => string;
+      generateTitle: string;
+      generateHelp: string;
+      editTitle: (code: string) => string;
+      editLimit: string;
+      limitLabel: string;
+      unlimited: string;
+      saveLimit: string;
+      limitSaved: (code: string) => string;
+      limitInvalid: string;
+      limitHelp: (uses: number) => string;
     };
   };
   crashes: {

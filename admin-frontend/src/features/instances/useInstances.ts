@@ -68,7 +68,19 @@ export function useDeleteInstance() {
 export function useGenerateCode() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.generateCode(id, 1),
+    mutationFn: (input: { id: string; maxUses: number | null }) =>
+      api.generateCode(input.id, input.maxUses),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: instanceKeys.list() });
+    },
+  });
+}
+
+export function useUpdateInstanceCode() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string; code: string; maxUses: number | null }) =>
+      api.updateInstanceCode(input.id, input.code, input.maxUses),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: instanceKeys.list() });
     },

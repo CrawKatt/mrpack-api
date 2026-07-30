@@ -14,7 +14,7 @@ use axum::{
     extract::DefaultBodyLimit,
     http::{HeaderName, HeaderValue, Method, header},
     middleware,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -169,6 +169,7 @@ fn build_launcher_routes(config: &Arc<Config>) -> Router<Arc<Config>> {
             "/api/instances/redeem",
             post(handlers::redeem_instance_code),
         )
+        .route("/api/instances/main", get(handlers::get_main_instance))
         .route("/api/social/snapshot", get(handlers::social_snapshot))
         .route(
             "/api/social/presence",
@@ -216,6 +217,10 @@ fn build_admin_routes(config: &Arc<Config>) -> Router<Arc<Config>> {
         .route(
             "/api/admin/instances/{instance_id}/codes",
             post(handlers::generate_instance_code),
+        )
+        .route(
+            "/api/admin/instances/{instance_id}/codes/{code}",
+            patch(handlers::update_instance_code),
         )
         .route(
             "/api/admin/instances/{instance_id}/upload",

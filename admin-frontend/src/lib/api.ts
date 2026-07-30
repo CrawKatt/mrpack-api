@@ -11,6 +11,7 @@ import type {
   MaintenanceStatus,
   ModEditResponse,
   ModpackDetails,
+  UpdateInstanceCodePayload,
   UpdateInstancePayload,
   UploadFileResponse,
 } from "../types/api";
@@ -256,12 +257,24 @@ export const api = {
 
   generateCode(
     instanceId: string,
-    maxUses = 1,
+    maxUses: number | null,
   ): Promise<InstanceCodeResponse> {
     const payload: GenerateCodePayload = { maxUses };
     return request<InstanceCodeResponse>(
       `/api/admin/instances/${encodeURIComponent(instanceId)}/codes`,
       { method: "POST", body: JSON.stringify(payload) },
+    );
+  },
+
+  updateInstanceCode(
+    instanceId: string,
+    code: string,
+    maxUses: number | null,
+  ): Promise<InstanceCodeResponse> {
+    const payload: UpdateInstanceCodePayload = { maxUses };
+    return request<InstanceCodeResponse>(
+      `/api/admin/instances/${encodeURIComponent(instanceId)}/codes/${encodeURIComponent(code)}`,
+      { method: "PATCH", body: JSON.stringify(payload) },
     );
   },
 

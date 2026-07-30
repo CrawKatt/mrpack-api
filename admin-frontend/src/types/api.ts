@@ -27,7 +27,9 @@ export interface ModpackDetails {
 
 export interface InstanceCode {
   code: string;
-  instance_id: string;
+  instanceId?: string;
+  instance_id?: string;
+  maxUses?: number | null;
   max_uses?: number | null;
   uses: number;
   active: boolean;
@@ -107,12 +109,18 @@ export interface CrashReportDetail extends CrashReportMeta {
 }
 
 export interface GenerateCodePayload {
-  maxUses?: number;
+  maxUses?: number | null;
+}
+
+export interface UpdateInstanceCodePayload {
+  maxUses: number | null;
 }
 
 export interface InstanceCodeResponse {
   code: string;
-  instance_id: string;
+  instanceId?: string;
+  instance_id?: string;
+  maxUses?: number | null;
   max_uses?: number | null;
   uses: number;
   active: boolean;
