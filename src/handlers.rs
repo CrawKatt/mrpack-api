@@ -158,6 +158,8 @@ struct WhitelistEntry {
 struct InstanceAccessGrant {
     #[serde(alias = "instance_id")]
     instance_id: String,
+    #[serde(default, alias = "code_hash")]
+    code_hash: String,
     username: Option<String>,
     uuid: Option<String>,
     created_at: u64,
@@ -874,6 +876,7 @@ pub async fn redeem_instance_code(
         access_token_hash,
         InstanceAccessGrant {
             instance_id: instance_id.clone(),
+            code_hash: hash_secret(&code_value),
             username,
             uuid,
             created_at: unix_timestamp(),
@@ -1714,13 +1717,30 @@ async fn require_instance_token(
         ));
     };
 
-    if grant.instance_id == instance_id && grant.active {
+    if grant_allows_instance(&store, grant, instance_id) {
         Ok(())
     } else {
         Err(AppError::Forbidden(
             "Invalid instance access token".to_string(),
         ))
     }
+}
+
+fn grant_allows_instance(
+    store: &InstanceStore,
+    grant: &InstanceAccessGrant,
+    instance_id: &str,
+) -> bool {
+    if grant.instance_id != instance_id || !grant.active {
+        return false;
+    }
+    if grant.code_hash.trim().is_empty() {
+        return true;
+    }
+
+    store.codes.values().any(|code| {
+        code.instance_id == instance_id && code.active && hash_secret(&code.code) == grant.code_hash
+    })
 }
 
 async fn is_admin_caller(headers: &axum::http::HeaderMap, config: &Config) -> bool {
@@ -2927,6 +2947,36 @@ mod tests {
 
         assert!(json.get("code").is_none());
         assert_eq!(json["accessToken"], "GRANT-TOKEN");
+    }
+
+    #[test]
+    fn instance_access_grant_requires_active_source_code() {
+        let code = InstanceCode {
+            code: "HEXPLAY".to_string(),
+            instance_id: "event".to_string(),
+            max_uses: Some(1),
+            uses: 1,
+            active: true,
+        };
+        let grant = InstanceAccessGrant {
+            instance_id: "event".to_string(),
+            code_hash: hash_secret(&code.code),
+            username: None,
+            uuid: None,
+            created_at: 0,
+            active: true,
+        };
+        let mut store = InstanceStore::default();
+        store.codes.insert(code.code.clone(), code.clone());
+
+        assert!(grant_allows_instance(&store, &grant, "event"));
+
+        let stored_code = store.codes.get_mut(&code.code).unwrap();
+        stored_code.active = false;
+        assert!(!grant_allows_instance(&store, &grant, "event"));
+
+        store.codes.clear();
+        assert!(!grant_allows_instance(&store, &grant, "event"));
     }
 }
 
