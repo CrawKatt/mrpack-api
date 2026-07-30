@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::error::{AppError, ResponseResult};
+use crate::sessions::{generate_token, hash_secret};
 use crate::utils::constant_time_compare;
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
@@ -107,6 +108,8 @@ pub struct ModInfo {
 struct InstanceStore {
     instances: HashMap<String, StoredInstance>,
     codes: HashMap<String, InstanceCode>,
+    #[serde(default)]
+    access_grants: HashMap<String, InstanceAccessGrant>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -152,6 +155,17 @@ struct WhitelistEntry {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
+struct InstanceAccessGrant {
+    #[serde(alias = "instance_id")]
+    instance_id: String,
+    username: Option<String>,
+    uuid: Option<String>,
+    created_at: u64,
+    active: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct InstanceCode {
     pub code: String,
     #[serde(alias = "instance_id")]
@@ -176,7 +190,7 @@ pub struct InstanceMedia {
 pub struct InstanceAccess {
     pub id: String,
     pub name: String,
-    pub code: String,
+    pub access_token: String,
     #[serde(flatten)]
     pub media: InstanceMedia,
 }
@@ -711,6 +725,9 @@ pub async fn delete_instance(
     store
         .codes
         .retain(|_, code| code.instance_id != instance_id);
+    store
+        .access_grants
+        .retain(|_, grant| grant.instance_id != instance_id);
     save_instance_store(&config, &store).await?;
     let dir = get_instance_dir(&config, &instance_id);
     if dir.exists() {
@@ -824,29 +841,51 @@ pub async fn redeem_instance_code(
         .get_mut(&code_value)
         .ok_or_else(|| AppError::Forbidden("Invalid instance code".to_string()))?;
     instance_code.uses += 1;
-    let instance = store
-        .instances
-        .get_mut(&instance_id)
-        .ok_or_else(|| AppError::FileNotFound("Instance not found".to_string()))?;
-
+    let access_token = generate_token();
+    let access_token_hash = hash_secret(&access_token);
+    let username = payload.username.filter(|value| !value.trim().is_empty());
+    let uuid = payload.uuid.filter(|value| !value.trim().is_empty());
     let whitelist_entry = WhitelistEntry {
         code: code_value.clone(),
-        username: payload.username.filter(|value| !value.trim().is_empty()),
-        uuid: payload.uuid.filter(|value| !value.trim().is_empty()),
+        username: username.clone(),
+        uuid: uuid.clone(),
     };
-    if !instance.whitelist.iter().any(|entry| {
-        entry.code == whitelist_entry.code
-            && entry.uuid == whitelist_entry.uuid
-            && entry.username == whitelist_entry.username
-    }) {
-        instance.whitelist.push(whitelist_entry);
-    }
+    let (access_id, access_name, access_media) = {
+        let instance = store
+            .instances
+            .get_mut(&instance_id)
+            .ok_or_else(|| AppError::FileNotFound("Instance not found".to_string()))?;
+
+        if !instance.whitelist.iter().any(|entry| {
+            entry.code == whitelist_entry.code
+                && entry.uuid == whitelist_entry.uuid
+                && entry.username == whitelist_entry.username
+        }) {
+            instance.whitelist.push(whitelist_entry);
+        }
+
+        (
+            instance.id.clone(),
+            instance.name.clone(),
+            instance.media.clone(),
+        )
+    };
+    store.access_grants.insert(
+        access_token_hash,
+        InstanceAccessGrant {
+            instance_id: instance_id.clone(),
+            username,
+            uuid,
+            created_at: unix_timestamp(),
+            active: true,
+        },
+    );
 
     let access = InstanceAccess {
-        id: instance.id.clone(),
-        name: instance.name.clone(),
-        code: code_value.clone(),
-        media: instance.media.clone(),
+        id: access_id,
+        name: access_name,
+        access_token,
+        media: access_media,
     };
     save_instance_store(&config, &store).await?;
 
@@ -894,7 +933,7 @@ pub async fn get_main_instance(
     let access = InstanceAccess {
         id: instance.id,
         name: instance.name,
-        code: String::new(),
+        access_token: String::new(),
         media: instance.media,
     };
 
@@ -1652,30 +1691,35 @@ async fn require_instance_access(
         return Ok(());
     }
 
-    require_instance_code(config, instance_id, headers).await
+    require_instance_token(config, instance_id, headers).await
 }
 
-async fn require_instance_code(
+async fn require_instance_token(
     config: &Config,
     instance_id: &str,
     headers: &axum::http::HeaderMap,
 ) -> ResponseResult<()> {
-    let code = headers
-        .get("x-instance-code")
+    let token = headers
+        .get("x-instance-token")
         .and_then(|value| value.to_str().ok())
-        .map(normalize_code)
-        .transpose()?
-        .ok_or_else(|| AppError::Forbidden("Missing instance code".to_string()))?;
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::Forbidden("Missing instance access token".to_string()))?;
 
     let store = load_instance_store(config).await?;
-    let Some(instance_code) = store.codes.get(&code) else {
-        return Err(AppError::Forbidden("Invalid instance code".to_string()));
+    let token_hash = hash_secret(token);
+    let Some(grant) = store.access_grants.get(&token_hash) else {
+        return Err(AppError::Forbidden(
+            "Invalid instance access token".to_string(),
+        ));
     };
 
-    if instance_code.instance_id == instance_id && instance_code.active {
+    if grant.instance_id == instance_id && grant.active {
         Ok(())
     } else {
-        Err(AppError::Forbidden("Invalid instance code".to_string()))
+        Err(AppError::Forbidden(
+            "Invalid instance access token".to_string(),
+        ))
     }
 }
 
@@ -1951,6 +1995,13 @@ fn generate_code() -> String {
         value = value / alphabet.len() as u128 + 17;
     }
     code
+}
+
+fn unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn slugify(value: &str) -> String {
@@ -2850,6 +2901,32 @@ mod tests {
             parse_code_max_uses(&serde_json::json!(25)).unwrap(),
             Some(25)
         );
+    }
+
+    #[test]
+    fn instance_store_accepts_legacy_json_without_access_grants() {
+        let store: InstanceStore = serde_json::from_value(serde_json::json!({
+            "instances": {},
+            "codes": {}
+        }))
+        .unwrap();
+
+        assert!(store.access_grants.is_empty());
+    }
+
+    #[test]
+    fn instance_access_serializes_token_without_echoing_redeem_code() {
+        let access = InstanceAccess {
+            id: "event".to_string(),
+            name: "Event".to_string(),
+            access_token: "GRANT-TOKEN".to_string(),
+            media: InstanceMedia::default(),
+        };
+
+        let json = serde_json::to_value(access).unwrap();
+
+        assert!(json.get("code").is_none());
+        assert_eq!(json["accessToken"], "GRANT-TOKEN");
     }
 }
 

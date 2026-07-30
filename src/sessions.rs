@@ -148,9 +148,13 @@ pub fn generate_token() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn hash_token(token: &str) -> String {
+pub fn hash_secret(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     hex::encode(digest)
+}
+
+fn hash_token(token: &str) -> String {
+    hash_secret(token)
 }
 
 fn now_unix() -> u64 {
