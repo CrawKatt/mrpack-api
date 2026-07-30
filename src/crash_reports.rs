@@ -151,7 +151,7 @@ pub async fn upload_crash_report(
     headers: HeaderMap,
     Json(payload): Json<UploadCrashReportRequest>,
 ) -> ResponseResult<Json<UploadCrashReportResponse>> {
-    let ip = client_ip_from_headers(&headers, None);
+    let ip = client_ip_from_headers(&headers, None, config.security.trust_proxy_headers);
     crash_report_limiter()
         .check(&ip)
         .map_err(AppError::TooManyRequests)?;

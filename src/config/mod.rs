@@ -35,6 +35,7 @@ pub struct StorageConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecurityConfig {
     pub require_https: bool,
+    pub trust_proxy_headers: bool,
     pub allowed_origins: Option<Vec<String>>,
     pub max_crash_report_bytes: usize,
 }
@@ -127,6 +128,11 @@ impl Config {
             .parse()
             .context("REQUIRE_HTTPS must be true or false")?;
 
+        let trust_proxy_headers = std::env::var("TRUST_PROXY_HEADERS")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse()
+            .context("TRUST_PROXY_HEADERS must be true or false")?;
+
         let max_crash_report_bytes = std::env::var("MAX_CRASH_REPORT_BYTES")
             .unwrap_or_else(|_| (2 * 1024 * 1024).to_string())
             .parse()
@@ -138,6 +144,7 @@ impl Config {
 
         let security = SecurityConfig {
             require_https,
+            trust_proxy_headers,
             allowed_origins,
             max_crash_report_bytes,
         };
@@ -170,6 +177,14 @@ impl Config {
                 tracing::warn!(
                     "⚠️  SECURITY WARNING: ALLOWED_ORIGINS is not set. \
                      Cross-origin browser access will be disabled."
+                );
+            }
+
+            if self.security.trust_proxy_headers {
+                tracing::warn!(
+                    "⚠️  SECURITY WARNING: TRUST_PROXY_HEADERS is true. \
+                     Only enable it when requests reach the API through a trusted reverse proxy \
+                     that overwrites X-Forwarded-* headers."
                 );
             }
 
@@ -262,6 +277,7 @@ mod tests {
             },
             security: SecurityConfig {
                 require_https: false,
+                trust_proxy_headers: false,
                 allowed_origins: None,
                 max_crash_report_bytes: 2 * 1024 * 1024,
             },
@@ -290,6 +306,7 @@ mod tests {
             },
             security: SecurityConfig {
                 require_https: false,
+                trust_proxy_headers: false,
                 allowed_origins: None,
                 max_crash_report_bytes: 2 * 1024 * 1024,
             },

@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::error::{AppError, ResponseResult};
 use crate::sessions::{generate_token, hash_secret};
 use crate::utils::constant_time_compare;
+use argon2::password_hash::rand_core::{OsRng, RngCore as _};
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     Extension, Json,
@@ -36,6 +37,8 @@ const INSTANCE_MEDIA_EXTENSIONS: &[&str] = &[
     "mov", "m4v", "ogv",
 ];
 const BYTES_PER_MEBIBYTE: f64 = 1_048_576.0;
+const INSTANCE_CODE_LEN: usize = 10;
+const INSTANCE_CODE_ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 fn bytes_to_megabytes(bytes: u64) -> f64 {
     bytes.to_f64().unwrap_or_default() / BYTES_PER_MEBIBYTE
@@ -474,7 +477,8 @@ pub async fn login(
     headers: axum::http::HeaderMap,
     Json(payload): Json<LoginRequest>,
 ) -> ResponseResult<Json<LoginResponse>> {
-    crate::auth::check_login_rate_limit(&headers)?;
+    let trust_proxy_headers = config.security.trust_proxy_headers;
+    crate::auth::check_login_rate_limit(&headers, trust_proxy_headers)?;
 
     tracing::info!("Login attempt for user: {}", payload.username);
 
@@ -490,7 +494,7 @@ pub async fn login(
         .is_ok();
 
     if !(username_matches && password_ok) {
-        crate::auth::record_login_failure(&headers);
+        crate::auth::record_login_failure(&headers, trust_proxy_headers);
         tracing::warn!("Login failed for user: {}", payload.username);
         return Err(AppError::AuthenticationFailed(
             "Credenciales incorrectas".to_string(),
@@ -501,7 +505,7 @@ pub async fn login(
     let (token, expires_at) = sessions
         .create_session(&config.auth.username, payload.remember)
         .await?;
-    crate::auth::record_login_success(&headers);
+    crate::auth::record_login_success(&headers, trust_proxy_headers);
 
     Ok(Json(LoginResponse {
         success: true,
@@ -1997,23 +2001,15 @@ fn parse_code_max_uses(value: &serde_json::Value) -> ResponseResult<Option<u32>>
 }
 
 fn generate_code() -> String {
-    static COUNTER: OnceLock<std::sync::atomic::AtomicU64> = OnceLock::new();
-    let counter = COUNTER
-        .get_or_init(|| std::sync::atomic::AtomicU64::new(0))
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let seed = nanos ^ (u128::from(std::process::id()) << 32) ^ u128::from(counter);
-    let alphabet = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let mut value = seed;
-    let mut code = String::with_capacity(10);
-    for _ in 0..10 {
-        let index = (value % alphabet.len() as u128) as usize;
-        code.push(alphabet[index] as char);
-        value = value / alphabet.len() as u128 + 17;
+    let mut random = [0_u8; INSTANCE_CODE_LEN];
+    OsRng.fill_bytes(&mut random);
+
+    let mut code = String::with_capacity(INSTANCE_CODE_LEN);
+    for byte in random {
+        let index = usize::from(byte & 0b0001_1111);
+        code.push(char::from(INSTANCE_CODE_ALPHABET[index]));
     }
+
     code
 }
 
@@ -2920,6 +2916,17 @@ mod tests {
         assert_eq!(
             parse_code_max_uses(&serde_json::json!(25)).unwrap(),
             Some(25)
+        );
+    }
+
+    #[test]
+    fn generate_code_uses_expected_public_format() {
+        let code = generate_code();
+
+        assert_eq!(code.len(), INSTANCE_CODE_LEN);
+        assert!(
+            code.bytes()
+                .all(|byte| INSTANCE_CODE_ALPHABET.contains(&byte))
         );
     }
 

@@ -76,7 +76,9 @@ pub async fn https_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    if !state.security.require_https || request_is_https(&request) {
+    if !state.security.require_https
+        || request_is_https(&request, state.security.trust_proxy_headers)
+    {
         return next.run(request).await;
     }
 
@@ -165,9 +167,13 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .filter(|token| !token.is_empty())
 }
 
-fn request_is_https(request: &Request) -> bool {
+fn request_is_https(request: &Request, trust_proxy_headers: bool) -> bool {
     if request.uri().scheme_str() == Some("https") {
         return true;
+    }
+
+    if !trust_proxy_headers {
+        return false;
     }
 
     let forwarded_proto = request
@@ -194,20 +200,23 @@ fn request_is_https(request: &Request) -> bool {
         })
 }
 
-pub fn check_login_rate_limit(headers: &HeaderMap) -> Result<(), AppError> {
-    let ip = client_ip_from_headers(headers, None);
+pub fn check_login_rate_limit(
+    headers: &HeaderMap,
+    trust_proxy_headers: bool,
+) -> Result<(), AppError> {
+    let ip = client_ip_from_headers(headers, None, trust_proxy_headers);
     login_limiter()
         .check(&ip)
         .map_err(AppError::TooManyRequests)
 }
 
-pub fn record_login_success(headers: &HeaderMap) {
-    let ip = client_ip_from_headers(headers, None);
+pub fn record_login_success(headers: &HeaderMap, trust_proxy_headers: bool) {
+    let ip = client_ip_from_headers(headers, None, trust_proxy_headers);
     login_limiter().record_success(&ip);
 }
 
-pub fn record_login_failure(headers: &HeaderMap) {
-    let ip = client_ip_from_headers(headers, None);
+pub fn record_login_failure(headers: &HeaderMap, trust_proxy_headers: bool) {
+    let ip = client_ip_from_headers(headers, None, trust_proxy_headers);
     login_limiter().record_failure(&ip);
 }
 
@@ -236,5 +245,27 @@ mod tests {
         );
 
         assert_eq!(bearer_token(&headers), None);
+    }
+
+    #[test]
+    fn request_is_https_ignores_proxy_headers_when_untrusted() {
+        let request = Request::builder()
+            .uri("http://localhost/api/health")
+            .header("x-forwarded-proto", "https")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        assert!(!request_is_https(&request, false));
+    }
+
+    #[test]
+    fn request_is_https_accepts_proxy_headers_when_trusted() {
+        let request = Request::builder()
+            .uri("http://localhost/api/health")
+            .header("x-forwarded-proto", "https")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        assert!(request_is_https(&request, true));
     }
 }

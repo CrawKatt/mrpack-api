@@ -8,9 +8,6 @@ storage/*.mrpack
 storage/*
 !storage/.gitkeep
 
-# Cargo
-Cargo.lock
-
 # IDE
 .idea/
 .vscode/

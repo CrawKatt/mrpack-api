@@ -157,25 +157,63 @@ pub fn crash_report_limiter() -> &'static RateLimiter {
 pub fn client_ip_from_headers(
     headers: &axum::http::HeaderMap,
     fallback: Option<std::net::SocketAddr>,
+    trust_proxy_headers: bool,
 ) -> String {
-    if let Some(forwarded) = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        return forwarded.to_string();
-    }
+    if trust_proxy_headers {
+        if let Some(forwarded) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return forwarded.to_string();
+        }
 
-    if let Some(real_ip) = headers
-        .get("x-real-ip")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        return real_ip.to_string();
+        if let Some(real_ip) = headers
+            .get("x-real-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return real_ip.to_string();
+        }
     }
 
     fallback.map_or_else(|| "unknown".to_string(), |addr| addr.ip().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    use super::client_ip_from_headers;
+
+    #[test]
+    fn client_ip_ignores_forwarded_headers_when_untrusted() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.10"));
+        let fallback = SocketAddr::from((Ipv4Addr::LOCALHOST, 3000));
+
+        assert_eq!(
+            client_ip_from_headers(&headers, Some(fallback), false),
+            "127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn client_ip_uses_forwarded_headers_when_trusted() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("203.0.113.10, 10.0.0.2"),
+        );
+        let fallback = SocketAddr::from((Ipv4Addr::LOCALHOST, 3000));
+
+        assert_eq!(
+            client_ip_from_headers(&headers, Some(fallback), true),
+            "203.0.113.10"
+        );
+    }
 }
