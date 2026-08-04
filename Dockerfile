@@ -27,6 +27,7 @@ RUN apt-get update \
 
 COPY --from=builder /app/target/release/mrpack_api /app/mrpack_api
 COPY --from=builder /app/static /app/static
+COPY --from=admin-builder /static/admin /app/static/admin
 # Inject credentials at runtime with environment variables or --env-file.
 
 EXPOSE 8000
