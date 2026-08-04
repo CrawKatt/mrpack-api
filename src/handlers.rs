@@ -1,7 +1,9 @@
 use crate::config::Config;
 use crate::error::{AppError, ResponseResult};
+use crate::r2::R2Store;
 use crate::sessions::{generate_token, hash_secret};
 use crate::utils::constant_time_compare;
+use anyhow::Context as _;
 use argon2::password_hash::rand_core::{OsRng, RngCore as _};
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
@@ -28,6 +30,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 const MRPACK_EXTENSION: &str = ".mrpack";
 const MRPACK_FILENAME: &str = "modpack.mrpack";
+const MAIN_MRPACK_KEY: &str = "main/modpack.mrpack";
 const JAR_EXTENSION: &str = ".jar";
 const OVERRIDE_MODS_DIR: &str = "overrides/mods";
 const MODRINTH_INDEX: &str = "modrinth.index.json";
@@ -547,8 +550,12 @@ pub async fn list_instances(
     let mut instances = Vec::new();
 
     for instance in store.instances.values() {
-        let modpack =
-            modpack_details_for_path(&get_instance_mrpack_path(&config, &instance.id)).await?;
+        let modpack = modpack_details_for_path(
+            &config,
+            &instance_mrpack_key(&instance.id),
+            &get_instance_mrpack_path(&config, &instance.id),
+        )
+        .await?;
         let mut codes: Vec<InstanceCode> = store
             .codes
             .values()
@@ -697,8 +704,12 @@ pub async fn update_instance(
         .cloned()
         .ok_or_else(|| AppError::FileNotFound("Instance not found".to_string()))?;
     save_instance_store(&config, &store).await?;
-    let modpack =
-        modpack_details_for_path(&get_instance_mrpack_path(&config, &instance.id)).await?;
+    let modpack = modpack_details_for_path(
+        &config,
+        &instance_mrpack_key(&instance.id),
+        &get_instance_mrpack_path(&config, &instance.id),
+    )
+    .await?;
     let mut codes: Vec<InstanceCode> = store
         .codes
         .values()
@@ -734,6 +745,15 @@ pub async fn delete_instance(
     store
         .access_grants
         .retain(|_, grant| grant.instance_id != instance_id);
+    if let Some(r2_store) = config.storage.r2.as_deref() {
+        r2_store
+            .delete(&instance_mrpack_key(&instance_id))
+            .await
+            .map_err(|why| {
+                tracing::error!("Failed to delete instance mrpack from R2: {why}");
+                AppError::Internal("Failed to delete instance modpack from R2".to_string())
+            })?;
+    }
     save_instance_store(&config, &store).await?;
     let dir = get_instance_dir(&config, &instance_id);
     if dir.exists() {
@@ -834,8 +854,12 @@ pub async fn redeem_instance_code(
         ));
     }
 
-    let modpack =
-        modpack_details_for_path(&get_instance_mrpack_path(&config, &instance_id)).await?;
+    let modpack = modpack_details_for_path(
+        &config,
+        &instance_mrpack_key(&instance_id),
+        &get_instance_mrpack_path(&config, &instance_id),
+    )
+    .await?;
     if !modpack.available {
         return Err(AppError::BadRequest(
             "La instancia todavía no tiene un modpack cargado desde el panel admin".to_string(),
@@ -926,8 +950,12 @@ pub async fn get_main_instance(
         ));
     }
 
-    let mut modpack =
-        modpack_details_for_path(&get_instance_mrpack_path(&config, &instance.id)).await?;
+    let mut modpack = modpack_details_for_path(
+        &config,
+        &instance_mrpack_key(&instance.id),
+        &get_instance_mrpack_path(&config, &instance.id),
+    )
+    .await?;
     modpack.icon_url.clone_from(&instance.media.icon_url);
     modpack
         .background_url
@@ -964,8 +992,12 @@ pub async fn info_instance_modpack(
         .get(&instance_id)
         .map(|instance| instance.media.clone())
         .unwrap_or_default();
-    let mut details =
-        modpack_details_for_path(&get_instance_mrpack_path(&config, &instance_id)).await?;
+    let mut details = modpack_details_for_path(
+        &config,
+        &instance_mrpack_key(&instance_id),
+        &get_instance_mrpack_path(&config, &instance_id),
+    )
+    .await?;
     details.icon_url = media.icon_url;
     details.background_url = media.background_url;
     details.icon_kind = media.icon_kind;
@@ -979,7 +1011,12 @@ pub async fn download_instance_modpack(
     headers: axum::http::HeaderMap,
 ) -> ResponseResult<Response> {
     require_instance_access(&config, &instance_id, &headers, true).await?;
-    download_modpack_file(get_instance_mrpack_path(&config, &instance_id)).await
+    download_modpack_file(
+        &config,
+        &instance_mrpack_key(&instance_id),
+        get_instance_mrpack_path(&config, &instance_id),
+    )
+    .await
 }
 
 pub async fn upload_instance_modpack(
@@ -990,6 +1027,7 @@ pub async fn upload_instance_modpack(
     ensure_instance_exists(&config, &instance_id).await?;
     upload_modpack_to_path(
         &config,
+        &instance_mrpack_key(&instance_id),
         get_instance_mrpack_path(&config, &instance_id),
         multipart,
     )
@@ -1001,7 +1039,12 @@ pub async fn delete_instance_modpack(
     AxumPath(instance_id): AxumPath<String>,
 ) -> ResponseResult<Json<ApiResponse>> {
     ensure_instance_exists(&config, &instance_id).await?;
-    delete_modpack_at_path(get_instance_mrpack_path(&config, &instance_id)).await
+    delete_modpack_at_path(
+        &config,
+        &instance_mrpack_key(&instance_id),
+        get_instance_mrpack_path(&config, &instance_id),
+    )
+    .await
 }
 
 pub async fn upload_instance_media(
@@ -1077,6 +1120,7 @@ pub async fn add_instance_mod(
     ensure_instance_exists(&config, &instance_id).await?;
     add_mod_to_path(
         &config,
+        &instance_mrpack_key(&instance_id),
         get_instance_mrpack_path(&config, &instance_id),
         multipart,
     )
@@ -1089,7 +1133,13 @@ pub async fn remove_instance_mod(
     Json(payload): Json<RemoveModRequest>,
 ) -> ResponseResult<Json<ModEditResponse>> {
     ensure_instance_exists(&config, &instance_id).await?;
-    remove_mod_from_path(&config, &instance_id, payload).await
+    remove_mod_from_path(
+        &config,
+        &instance_mrpack_key(&instance_id),
+        get_instance_mrpack_path(&config, &instance_id),
+        payload,
+    )
+    .await
 }
 
 pub async fn info_modpack(
@@ -1105,24 +1155,11 @@ pub async fn info_modpack(
     }
 
     let file_path = get_mrpack_path(&config);
-    if !file_path.exists() {
-        let modpack_details = unavailable_modpack_details(MRPACK_FILENAME);
-
+    let mut modpack_details =
+        modpack_details_for_path(&config, MAIN_MRPACK_KEY, &file_path).await?;
+    if !modpack_details.available {
         return Ok(Json(modpack_details));
     }
-
-    let metadata = tokio::fs::metadata(&file_path).await.map_err(|e| {
-        tracing::error!("Failed to get file metadata: {}", e);
-        AppError::Internal("Failed to get file information".to_string())
-    })?;
-
-    let file_size = metadata.len();
-    let file_size_mb = bytes_to_megabytes(file_size);
-
-    let modpack_info = extract_modpack_info(&file_path).await.map_err(|why| {
-        tracing::error!("Stored modpack is invalid: {why}");
-        AppError::Internal("Stored modpack is invalid".to_string())
-    })?;
 
     let available = if is_admin {
         true
@@ -1130,17 +1167,7 @@ pub async fn info_modpack(
         main_pack.download_enabled
     };
 
-    let modpack_details = ModpackDetails {
-        available,
-        file_name: MRPACK_FILENAME.to_string(),
-        file_size: Some(file_size),
-        file_size_mb: Some(file_size_mb),
-        modpack_info: Some(modpack_info),
-        icon_url: None,
-        background_url: None,
-        icon_kind: None,
-        background_kind: None,
-    };
+    modpack_details.available = available;
 
     Ok(Json(modpack_details))
 }
@@ -1164,255 +1191,54 @@ pub async fn download_modpack(
         }
     }
 
-    let file_path = get_mrpack_path(&config);
-    let metadata = fs::metadata(&file_path)
-        .await
-        .map_err(|_| AppError::FileNotFound("No modpack available for download".to_string()))?;
-
-    let file_size = metadata.len();
-    let file_size_mb = bytes_to_megabytes(file_size);
-
-    tracing::info!(
-        "Modpack download started: {} ({:.2} MB)",
-        MRPACK_FILENAME,
-        file_size_mb
-    );
-
-    let file = fs::File::open(&file_path).await.map_err(|why| {
-        tracing::error!("Failed to open file for download: {}", why);
-        AppError::FileIo(why)
-    })?;
-
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-    let response = Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{MRPACK_FILENAME}\""),
-        )
-        .header(header::CONTENT_LENGTH, file_size.to_string())
-        .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
-        .body(body)
-        .map_err(|why| AppError::Internal(format!("Failed to build response: {why}")))?;
-
-    tracing::debug!("Modpack download response sent");
-
-    Ok(response)
+    download_modpack_file(&config, MAIN_MRPACK_KEY, get_mrpack_path(&config)).await
 }
 
 pub async fn upload_modpack(
     State(config): State<Arc<Config>>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> ResponseResult<Json<UploadResponse>> {
-    tracing::info!("Modpack upload initiated");
-    let _guard = modpack_write_lock().lock().await;
-
-    let mut file_data: Option<(String, Vec<u8>)> = None;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|why| AppError::MultipartError(why.to_string()))?
-    {
-        let field_name = field
-            .name()
-            .ok_or_else(|| AppError::BadRequest("Missing field name".to_string()))?
-            .to_string();
-
-        if field_name != "file" {
-            tracing::warn!("Ignoring unexpected field: {}", field_name);
-            continue;
-        }
-
-        let file_name = field
-            .file_name()
-            .ok_or_else(|| AppError::BadRequest("Missing filename".to_string()))?
-            .to_string();
-
-        tracing::debug!("Processing upload: {file_name}");
-        validate_file_extension(&file_name)?;
-        let sanitized_name = sanitize_filename(&file_name)?;
-        tracing::debug!("Sanitized filename: {sanitized_name}");
-        let data = field
-            .bytes()
-            .await
-            .map_err(|why| AppError::MultipartError(format!("Failed to read file data: {why}")))?
-            .to_vec();
-
-        validate_file_size(data.len(), &config)?;
-        validate_mrpack_archive(&data)?;
-        file_data = Some((sanitized_name, data));
-        break;
-    }
-
-    let (original_name, data) =
-        file_data.ok_or_else(|| AppError::BadRequest("No file provided in request".to_string()))?;
-
-    let file_size = data.len() as u64;
-    let file_size_mb = bytes_to_megabytes(file_size);
-    tracing::info!("Uploading file: {original_name} ({:.2} MB)", file_size_mb);
-
-    let storage_dir = &config.storage.directory;
-    fs::create_dir_all(storage_dir).await.map_err(|e| {
-        tracing::error!("Failed to create storage directory: {}", e);
-        AppError::FileIo(e)
-    })?;
-
-    let file_path = get_mrpack_path(&config);
-    let temp_path = file_path.with_extension("tmp");
-    let mut file = fs::File::create(&temp_path).await.map_err(|e| {
-        tracing::error!("Failed to create temporary file: {}", e);
-        AppError::FileIo(e)
-    })?;
-
-    file.write_all(&data).await.map_err(|e| {
-        tracing::error!("Failed to write file data: {}", e);
-        AppError::FileIo(e)
-    })?;
-
-    file.sync_all().await.map_err(|e| {
-        tracing::error!("Failed to sync file to disk: {}", e);
-        AppError::FileIo(e)
-    })?;
-
-    drop(file);
-
-    fs::rename(&temp_path, &file_path).await.map_err(|why| {
-        tracing::error!("Failed to rename temporary file: {}", why);
-        let _ = std::fs::remove_file(&temp_path);
-        AppError::FileIo(why)
-    })?;
-
-    tracing::info!(
-        "Modpack uploaded successfully: {} ({:.2} MB)",
-        original_name,
-        file_size_mb
-    );
-
-    let upload_response = UploadResponse {
-        success: true,
-        message: "File uploaded successfully".to_string(),
-        file_name: original_name,
-        file_size,
-        file_size_mb,
-    };
-
-    Ok(Json(upload_response))
+    upload_modpack_to_path(
+        &config,
+        MAIN_MRPACK_KEY,
+        get_mrpack_path(&config),
+        multipart,
+    )
+    .await
 }
 
 pub async fn add_mod(
     State(config): State<Arc<Config>>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> ResponseResult<Json<ModEditResponse>> {
-    tracing::info!("Mod upload initiated");
-    let _guard = modpack_write_lock().lock().await;
-
-    let file_path = get_mrpack_path(&config);
-    if !file_path.exists() {
-        return Err(AppError::FileNotFound(
-            "No modpack file to edit".to_string(),
-        ));
-    }
-
-    let mut mod_data: Option<(String, Vec<u8>)> = None;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|why| AppError::MultipartError(why.to_string()))?
-    {
-        let field_name = field
-            .name()
-            .ok_or_else(|| AppError::BadRequest("Missing field name".to_string()))?
-            .to_string();
-
-        if field_name != "file" {
-            tracing::warn!("Ignoring unexpected field: {}", field_name);
-            continue;
-        }
-
-        let file_name = field
-            .file_name()
-            .ok_or_else(|| AppError::BadRequest("Missing filename".to_string()))?
-            .to_string();
-
-        validate_mod_file_extension(&file_name)?;
-        let sanitized_name = sanitize_filename(&file_name)?;
-        let data = field
-            .bytes()
-            .await
-            .map_err(|why| AppError::MultipartError(format!("Failed to read mod data: {why}")))?
-            .to_vec();
-
-        validate_file_size(data.len(), &config)?;
-        validate_jar_archive(&data)?;
-        mod_data = Some((sanitized_name, data));
-        break;
-    }
-
-    let (file_name, data) = mod_data
-        .ok_or_else(|| AppError::BadRequest("No mod file provided in request".to_string()))?;
-    let mod_path = add_override_mod_to_mrpack(file_path.clone(), file_name, data).await?;
-    let modpack_info = extract_modpack_info(&file_path).await.ok();
-
-    Ok(Json(ModEditResponse {
-        success: true,
-        message: "Mod added to modpack".to_string(),
-        path: mod_path,
-        modpack_info,
-    }))
+    add_mod_to_path(
+        &config,
+        MAIN_MRPACK_KEY,
+        get_mrpack_path(&config),
+        multipart,
+    )
+    .await
 }
 
 pub async fn delete_modpack(
     State(config): State<Arc<Config>>,
 ) -> ResponseResult<Json<ApiResponse>> {
-    let file_path = get_mrpack_path(&config);
-    let _guard = modpack_write_lock().lock().await;
-
-    tracing::info!("Modpack deletion requested");
-    if !file_path.exists() {
-        return Err(AppError::FileNotFound(
-            "No modpack file to delete".to_string(),
-        ));
-    }
-
-    fs::remove_file(&file_path).await.map_err(|why| {
-        tracing::error!("Failed to delete modpack: {why}");
-        AppError::FileIo(why)
-    })?;
-
-    tracing::info!("Modpack deleted successfully");
-
-    Ok(Json(ApiResponse::success("Modpack deleted successfully")))
+    delete_modpack_at_path(&config, MAIN_MRPACK_KEY, get_mrpack_path(&config)).await
 }
 
 pub async fn remove_mod(
     State(config): State<Arc<Config>>,
     Json(payload): Json<RemoveModRequest>,
 ) -> ResponseResult<Json<ModEditResponse>> {
-    let file_path = get_mrpack_path(&config);
-    let _guard = modpack_write_lock().lock().await;
-
-    if !file_path.exists() {
-        return Err(AppError::FileNotFound(
-            "No modpack file to edit".to_string(),
-        ));
-    }
-
-    let target_path = normalize_archive_path(&payload.path)?;
-    let removed_path = remove_mod_from_mrpack(file_path.clone(), target_path).await?;
-    let modpack_info = extract_modpack_info(&file_path).await.ok();
-
-    Ok(Json(ModEditResponse {
-        success: true,
-        message: "Mod removed from modpack".to_string(),
-        path: removed_path,
-        modpack_info,
-    }))
+    remove_mod_from_path(&config, MAIN_MRPACK_KEY, get_mrpack_path(&config), payload).await
 }
 
-async fn modpack_details_for_path(file_path: &Path) -> ResponseResult<ModpackDetails> {
-    if !file_path.exists() {
+async fn modpack_details_for_path(
+    config: &Config,
+    object_key: &str,
+    file_path: &Path,
+) -> ResponseResult<ModpackDetails> {
+    if !ensure_mrpack_cached(config, object_key, file_path).await? {
         return Ok(unavailable_modpack_details(MRPACK_FILENAME));
     }
 
@@ -1455,7 +1281,16 @@ fn unavailable_modpack_details(file_name: &str) -> ModpackDetails {
     }
 }
 
-async fn download_modpack_file(file_path: PathBuf) -> ResponseResult<Response> {
+async fn download_modpack_file(
+    config: &Config,
+    object_key: &str,
+    file_path: PathBuf,
+) -> ResponseResult<Response> {
+    if !ensure_mrpack_cached(config, object_key, &file_path).await? {
+        return Err(AppError::FileNotFound(
+            "No modpack available for download".to_string(),
+        ));
+    }
     let metadata = fs::metadata(&file_path)
         .await
         .map_err(|_| AppError::FileNotFound("No modpack available for download".to_string()))?;
@@ -1490,6 +1325,7 @@ async fn download_modpack_file(file_path: PathBuf) -> ResponseResult<Response> {
 
 async fn upload_modpack_to_path(
     config: &Config,
+    object_key: &str,
     file_path: PathBuf,
     mut multipart: Multipart,
 ) -> ResponseResult<Json<UploadResponse>> {
@@ -1536,6 +1372,12 @@ async fn upload_modpack_to_path(
 
     let file_size = data.len() as u64;
     let file_size_mb = bytes_to_megabytes(file_size);
+    if let Some(store) = config.storage.r2.as_deref() {
+        store.put(object_key, &data).await.map_err(|why| {
+            tracing::error!("Failed to upload mrpack to R2: {why}");
+            AppError::Internal("Failed to store modpack in R2".to_string())
+        })?;
+    }
     if let Some(parent) = file_path.parent() {
         fs::create_dir_all(parent).await.map_err(AppError::FileIo)?;
     }
@@ -1563,13 +1405,14 @@ async fn upload_modpack_to_path(
 
 async fn add_mod_to_path(
     config: &Config,
+    object_key: &str,
     file_path: PathBuf,
     mut multipart: Multipart,
 ) -> ResponseResult<Json<ModEditResponse>> {
     tracing::info!("Mod upload initiated");
     let _guard = modpack_write_lock().lock().await;
 
-    if !file_path.exists() {
+    if !ensure_mrpack_cached(config, object_key, &file_path).await? {
         return Err(AppError::FileNotFound(
             "No modpack file to edit".to_string(),
         ));
@@ -1613,6 +1456,10 @@ async fn add_mod_to_path(
     let (file_name, data) = mod_data
         .ok_or_else(|| AppError::BadRequest("No mod file provided in request".to_string()))?;
     let mod_path = add_override_mod_to_mrpack(file_path.clone(), file_name, data).await?;
+    if let Err(error) = sync_mrpack_to_r2(config, object_key, &file_path).await {
+        restore_mrpack_cache_after_edit_failure(config, object_key, &file_path).await;
+        return Err(error);
+    }
     let modpack_info = extract_modpack_info(&file_path).await.ok();
 
     Ok(Json(ModEditResponse {
@@ -1623,12 +1470,22 @@ async fn add_mod_to_path(
     }))
 }
 
-async fn delete_modpack_at_path(file_path: PathBuf) -> ResponseResult<Json<ApiResponse>> {
+async fn delete_modpack_at_path(
+    config: &Config,
+    object_key: &str,
+    file_path: PathBuf,
+) -> ResponseResult<Json<ApiResponse>> {
     let _guard = modpack_write_lock().lock().await;
-    if !file_path.exists() {
+    if !ensure_mrpack_cached(config, object_key, &file_path).await? {
         return Err(AppError::FileNotFound(
             "No modpack file to delete".to_string(),
         ));
+    }
+    if let Some(store) = config.storage.r2.as_deref() {
+        store.delete(object_key).await.map_err(|why| {
+            tracing::error!("Failed to delete mrpack from R2: {why}");
+            AppError::Internal("Failed to delete modpack from R2".to_string())
+        })?;
     }
     fs::remove_file(&file_path)
         .await
@@ -1638,13 +1495,13 @@ async fn delete_modpack_at_path(file_path: PathBuf) -> ResponseResult<Json<ApiRe
 
 async fn remove_mod_from_path(
     config: &Config,
-    instance_id: &str,
+    object_key: &str,
+    file_path: PathBuf,
     payload: RemoveModRequest,
 ) -> ResponseResult<Json<ModEditResponse>> {
-    let file_path = get_instance_mrpack_path(config, instance_id);
     let _guard = modpack_write_lock().lock().await;
 
-    if !file_path.exists() {
+    if !ensure_mrpack_cached(config, object_key, &file_path).await? {
         return Err(AppError::FileNotFound(
             "No modpack file to edit".to_string(),
         ));
@@ -1652,6 +1509,10 @@ async fn remove_mod_from_path(
 
     let target_path = normalize_archive_path(&payload.path)?;
     let removed_path = remove_mod_from_mrpack(file_path.clone(), target_path).await?;
+    if let Err(error) = sync_mrpack_to_r2(config, object_key, &file_path).await {
+        restore_mrpack_cache_after_edit_failure(config, object_key, &file_path).await;
+        return Err(error);
+    }
     let modpack_info = extract_modpack_info(&file_path).await.ok();
 
     Ok(Json(ModEditResponse {
@@ -1660,6 +1521,150 @@ async fn remove_mod_from_path(
         path: removed_path,
         modpack_info,
     }))
+}
+
+fn instance_mrpack_key(instance_id: &str) -> String {
+    format!("instances/{instance_id}/{MRPACK_FILENAME}")
+}
+
+async fn ensure_mrpack_cached(
+    config: &Config,
+    object_key: &str,
+    file_path: &Path,
+) -> ResponseResult<bool> {
+    let Some(store) = config.storage.r2.as_deref() else {
+        return Ok(file_path.exists());
+    };
+
+    if fs::metadata(file_path)
+        .await
+        .is_ok_and(|metadata| metadata.is_file())
+    {
+        return Ok(true);
+    }
+
+    download_mrpack_from_r2(store, object_key, file_path).await
+}
+
+async fn download_mrpack_from_r2(
+    store: &R2Store,
+    object_key: &str,
+    file_path: &Path,
+) -> ResponseResult<bool> {
+    let Some(download) = store.get(object_key).await.map_err(|why| {
+        tracing::error!("Failed to download R2 object '{object_key}': {why}");
+        AppError::Internal("Failed to download modpack from R2".to_string())
+    })?
+    else {
+        return Ok(false);
+    };
+
+    if let Some(parent) = file_path.parent() {
+        fs::create_dir_all(parent).await.map_err(AppError::FileIo)?;
+    }
+    let temp_path = file_path.with_extension("r2.tmp");
+    let mut file = fs::File::create(&temp_path)
+        .await
+        .map_err(AppError::FileIo)?;
+    file.write_all(&download).await.map_err(AppError::FileIo)?;
+    file.sync_all().await.map_err(AppError::FileIo)?;
+    drop(file);
+    fs::rename(&temp_path, file_path)
+        .await
+        .map_err(AppError::FileIo)?;
+    Ok(true)
+}
+
+async fn sync_mrpack_to_r2(
+    config: &Config,
+    object_key: &str,
+    file_path: &Path,
+) -> ResponseResult<()> {
+    let Some(store) = config.storage.r2.as_deref() else {
+        return Ok(());
+    };
+    let data = fs::read(file_path).await.map_err(AppError::FileIo)?;
+    store.put(object_key, &data).await.map_err(|why| {
+        tracing::error!("Failed to sync mrpack to R2: {why}");
+        AppError::Internal("Failed to save modpack in R2".to_string())
+    })
+}
+
+async fn restore_mrpack_cache_after_edit_failure(
+    config: &Config,
+    object_key: &str,
+    file_path: &Path,
+) {
+    let Some(store) = config.storage.r2.as_deref() else {
+        return;
+    };
+    if let Err(error) = download_mrpack_from_r2(store, object_key, file_path).await {
+        tracing::error!(
+            "Failed to restore local mrpack cache after R2 sync failure for '{object_key}': {error}"
+        );
+    }
+}
+
+pub async fn migrate_local_mrpacks_to_r2(config: &Config) -> anyhow::Result<()> {
+    let Some(store) = config.storage.r2.as_deref() else {
+        return Ok(());
+    };
+    let _guard = modpack_write_lock().lock().await;
+    let max_bytes = u64::try_from(config.storage.max_file_size_mb)
+        .context("MAX_FILE_SIZE_MB does not fit in a 64-bit size")?
+        .saturating_mul(1024 * 1024);
+
+    migrate_local_mrpack_to_r2(store, MAIN_MRPACK_KEY, &get_mrpack_path(config), max_bytes).await?;
+
+    let instance_store = load_instance_store(config)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    for instance in instance_store.instances.values() {
+        migrate_local_mrpack_to_r2(
+            store,
+            &instance_mrpack_key(&instance.id),
+            &get_instance_mrpack_path(config, &instance.id),
+            max_bytes,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn migrate_local_mrpack_to_r2(
+    store: &R2Store,
+    object_key: &str,
+    file_path: &Path,
+    max_bytes: u64,
+) -> anyhow::Result<()> {
+    let metadata = match fs::metadata(file_path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() {
+        return Ok(());
+    }
+    if metadata.len() > max_bytes {
+        anyhow::bail!(
+            "Local mrpack '{}' is {} bytes, exceeding MAX_FILE_SIZE_MB",
+            file_path.display(),
+            metadata.len()
+        );
+    }
+    if store.exists(object_key).await? {
+        return Ok(());
+    }
+
+    let data = fs::read(file_path).await?;
+    store.put(object_key, &data).await?;
+    tracing::info!(
+        "Migrated local mrpack '{}' to R2 object '{}'",
+        file_path.display(),
+        object_key
+    );
+    Ok(())
 }
 
 async fn ensure_instance_exists(config: &Config, instance_id: &str) -> ResponseResult<()> {

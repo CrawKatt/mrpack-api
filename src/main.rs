@@ -3,6 +3,7 @@ mod config;
 mod crash_reports;
 mod error;
 mod handlers;
+mod r2;
 mod rate_limit;
 mod sessions;
 mod utils;
@@ -46,6 +47,9 @@ async fn main() -> Result<()> {
     tokio::fs::create_dir_all(config.storage.directory.join("crash-reports"))
         .await
         .context("Failed to create crash-reports directory")?;
+    handlers::migrate_local_mrpacks_to_r2(&config)
+        .await
+        .context("Failed to migrate local mrpacks to Cloudflare R2")?;
 
     let app = build_app(&config);
     let addr = config.socket_addr()?;
@@ -358,6 +362,14 @@ fn log_startup_info(config: &Config) {
     tracing::info!("Storage:");
     tracing::info!("  Directory: {:?}", config.storage.directory);
     tracing::info!("  Max file size: {} MB", config.storage.max_file_size_mb);
+    tracing::info!(
+        "  Mrpack backend: {}",
+        if config.storage.r2.is_some() {
+            "Cloudflare R2"
+        } else {
+            "local filesystem"
+        }
+    );
     tracing::info!("");
     tracing::info!("Security:");
     tracing::info!("  Admin username: {}", config.auth.username);

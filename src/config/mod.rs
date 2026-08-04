@@ -3,6 +3,7 @@ use argon2::PasswordHash;
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -30,6 +31,8 @@ pub struct AuthConfig {
 pub struct StorageConfig {
     pub directory: PathBuf,
     pub max_file_size_mb: usize,
+    #[serde(skip)]
+    pub r2: Option<Arc<crate::r2::R2Store>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -113,15 +116,7 @@ impl Config {
             maintenance_token_hash: read_optional_hash("MAINTENANCE_TOKEN_HASH")?,
         };
 
-        let storage = StorageConfig {
-            directory: std::env::var("STORAGE_DIR")
-                .unwrap_or_else(|_| "storage".to_string())
-                .into(),
-            max_file_size_mb: std::env::var("MAX_FILE_SIZE_MB")
-                .unwrap_or_else(|_| "2048".to_string())
-                .parse()
-                .context("MAX_FILE_SIZE_MB must be a valid number")?,
-        };
+        let storage = load_storage_config()?;
 
         let require_https = std::env::var("REQUIRE_HTTPS")
             .unwrap_or_else(|_| "false".to_string())
@@ -210,6 +205,12 @@ impl Config {
             anyhow::bail!("MAX_FILE_SIZE_MB must be between 1 and 10240 (10GB)");
         }
 
+        if is_production && self.storage.r2.is_none() {
+            tracing::warn!(
+                "R2 storage is disabled; modpacks will be stored in the local STORAGE_DIR"
+            );
+        }
+
         if self.auth.username.len() < 4 {
             anyhow::bail!("USERNAME must be at least 4 characters long");
         }
@@ -254,6 +255,26 @@ fn read_optional_hash(env_name: &str) -> Result<Option<String>> {
     Ok(Some(hash))
 }
 
+fn parse_bool_env(name: &str, default: bool) -> Result<bool> {
+    std::env::var(name)
+        .unwrap_or_else(|_| default.to_string())
+        .parse()
+        .with_context(|| format!("{name} must be true or false"))
+}
+
+fn load_storage_config() -> Result<StorageConfig> {
+    Ok(StorageConfig {
+        directory: std::env::var("STORAGE_DIR")
+            .unwrap_or_else(|_| "storage".to_string())
+            .into(),
+        max_file_size_mb: std::env::var("MAX_FILE_SIZE_MB")
+            .unwrap_or_else(|_| "2048".to_string())
+            .parse()
+            .context("MAX_FILE_SIZE_MB must be a valid number")?,
+        r2: crate::r2::R2Store::from_env(parse_bool_env("R2_ENABLED", false)?)?.map(Arc::new),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +295,7 @@ mod tests {
             storage: StorageConfig {
                 directory: "storage".into(),
                 max_file_size_mb: 500,
+                r2: None,
             },
             security: SecurityConfig {
                 require_https: false,
@@ -303,6 +325,7 @@ mod tests {
             storage: StorageConfig {
                 directory: "storage".into(),
                 max_file_size_mb: 500,
+                r2: None,
             },
             security: SecurityConfig {
                 require_https: false,
